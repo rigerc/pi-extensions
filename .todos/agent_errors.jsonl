@@ -1,1 +1,0 @@
-{"ts":"2026-05-09T17:46:24.930836778Z","args":["create","Fix shell injection in CLI wrappers","--type","bug","--priority","P0","--description-file","-","--acceptance-file","-"],"error":"--acceptance-file cannot read from stdin more than once in a single command","session":"ses_7a47bc"}

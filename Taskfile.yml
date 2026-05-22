@@ -1,102 +1,102 @@
 version: '3'
 tasks:
-    _run:
-        internal: true
-        requires:
-            vars: [APP, COMMAND]
-        cmds:
-            - task: _global:pre
-              vars: {APP: '{{.APP}}'}
-            - task: _app:pre
-              vars: {APP: '{{.APP}}'}
-            - defer:
-                task: _app:post
-                vars: {APP: '{{.APP}}'}
-            - defer:
-                task: _global:post
-                vars: {APP: '{{.APP}}'}
-            - '{{.COMMAND}}'
-    _app:pre:
-        internal: true
-        requires:
-            vars: [APP]
-        cmds:
-            - task: _{{.APP}}:pre
-    _app:post:
-        internal: true
-        requires:
-            vars: [APP]
-        cmds:
-            - task: _{{.APP}}:post
-    _global:pre:
-        internal: true
-        requires:
-            vars: [APP]
-        cmds:
-            - 'skillshare update -p && skillshare sync -p'
-    _global:post:
-        internal: true
-        requires:
-            vars: [APP]
-        cmds:
-            - ':'
-    pi:
-        desc: Run pi with global and pi-specific hooks
-        cmds:
-            - task: _run
-              vars:
-                APP: pi
-                COMMAND: 'pi {{.CLI_ARGS}}'
-    _pi:pre:
-        internal: true
-        cmds:
-            - ':'
-    _pi:post:
-        internal: true
-        cmds:
-            - ':'
-    codex:
-        desc: Run codex with global and codex-specific hooks
-        cmds:
-            - task: _run
-              vars:
-                APP: codex
-                COMMAND: 'codex {{.CLI_ARGS}}'
-    _codex:pre:
-        internal: true
-        cmds:
-            - ':'
-    _codex:post:
-        internal: true
-        cmds:
-            - ':'
-    claude:
-        desc: Run claude with global and claude-specific hooks
-        cmds:
-            - task: _run
-              vars:
-                APP: claude
-                COMMAND: 'claude {{.CLI_ARGS}}'
-    _claude:pre:
-        internal: true
-        cmds:
-            - ':'
-    _claude:post:
-        internal: true
-        cmds:
-            - ':'
-    opencode:
-        desc: Run opencode with global and opencode-specific hooks
-        cmds:
-            - task: _run
-              vars:
-                APP: opencode
-                COMMAND: 'opencode {{.CLI_ARGS}}'
-    _opencode:pre:
-        internal: true
-        cmds:
-            - ':'
-    _opencode:post:
-        internal: true
-        cmds:
-            - ':'
+  _run:
+    internal: true
+    requires:
+      vars: [APP, COMMAND]
+    cmds:
+      - task: _global:pre
+        vars: { APP: '{{.APP}}' }
+      - task: _app:pre
+        vars: { APP: '{{.APP}}' }
+      - defer:
+          task: _app:post
+          vars: { APP: '{{.APP}}' }
+      - defer:
+          task: _global:post
+          vars: { APP: '{{.APP}}' }
+      - '{{.COMMAND}}'
+  _app:pre:
+    internal: true
+    requires:
+      vars: [APP]
+    cmds:
+      - task: _{{.APP}}:pre
+  _app:post:
+    internal: true
+    requires:
+      vars: [APP]
+    cmds:
+      - task: _{{.APP}}:post
+  _global:pre:
+    internal: true
+    requires:
+      vars: [APP]
+    cmds:
+      - 'skillshare update -p && skillshare sync -p'
+  _global:post:
+    internal: true
+    requires:
+      vars: [APP]
+    cmds:
+      - ':'
+  pi:
+    desc: Run pi with global and pi-specific hooks
+    cmds:
+      - task: _run
+        vars:
+          APP: pi
+          COMMAND: 'pi {{.CLI_ARGS}}'
+  _pi:pre:
+    internal: true
+    cmds:
+      - ':'
+  _pi:post:
+    internal: true
+    cmds:
+      - ':'
+  codex:
+    desc: Run codex with global and codex-specific hooks
+    cmds:
+      - task: _run
+        vars:
+          APP: codex
+          COMMAND: 'codex {{.CLI_ARGS}}'
+  _codex:pre:
+    internal: true
+    cmds:
+      - ':'
+  _codex:post:
+    internal: true
+    cmds:
+      - ':'
+  claude:
+    desc: Run claude with global and claude-specific hooks
+    cmds:
+      - task: _run
+        vars:
+          APP: claude
+          COMMAND: 'claude {{.CLI_ARGS}}'
+  _claude:pre:
+    internal: true
+    cmds:
+      - ':'
+  _claude:post:
+    internal: true
+    cmds:
+      - ':'
+  opencode:
+    desc: Run opencode with global and opencode-specific hooks
+    cmds:
+      - task: _run
+        vars:
+          APP: opencode
+          COMMAND: 'opencode {{.CLI_ARGS}}'
+  _opencode:pre:
+    internal: true
+    cmds:
+      - ':'
+  _opencode:post:
+    internal: true
+    cmds:
+      - ':'

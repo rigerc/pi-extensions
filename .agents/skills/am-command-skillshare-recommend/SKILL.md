@@ -12,13 +12,14 @@ x-agentsmesh-allowed-tools:
 
 Generate a skill profile of this repository using repomix, then search the skillshare registry for relevant community skills and recommend the best matches.
 
-Focus on **domain-relevant skills**: ones that match what this project *is* (e.g., skill systems, extension patterns, package management, skill authoring, configuration management). Deprioritize generic tooling, CI, and AI/LLM skills unless they directly match a unique aspect of the project.
+Focus on **domain-relevant skills**: ones that match what this project _is_ (e.g., skill systems, extension patterns, package management, skill authoring, configuration management). Deprioritize generic tooling, CI, and AI/LLM skills unless they directly match a unique aspect of the project.
 
 ## Workflow
 
 1. **Determine repo name**: Extract the repository name from `git remote -v` (e.g., `origin  git@github.com:user/repo.git` → `repo`). Use that as `<repo name>`.
 
 2. **Run repomix**: Execute:
+
    ```bash
    npx -y repomix --skill-generate --no-dot-ignore --skill-output .skillshare/skills/<repo name> --force
    ```

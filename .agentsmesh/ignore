@@ -1,7 +1,0 @@
-# Patterns ignored by all configured AI tools (gitignore syntax)
-#
-# node_modules/
-# dist/
-# .env*
-# *.log
-# coverage/

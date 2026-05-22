@@ -16,6 +16,7 @@ Generate modular, path-scoped rules that are **non-obvious, project-specific, an
 ## Phase 1: Discovery (Find Non-Obvious Patterns)
 
 Analyze the repository to identify project-specific conventions, not generic patterns:
+
 1. Use Glob to map file types and directory structure
 2. Read framework configs (`package.json`, `go.mod`, etc.) for project-specific dependencies
 3. Grep for repeated custom patterns (e.g., internal utility usage, error handling wrappers, custom types)
@@ -25,6 +26,7 @@ Analyze the repository to identify project-specific conventions, not generic pat
 ## Phase 2: Configuration
 
 For each rule, use the `question` tool to gather:
+
 - Rule topic (prioritize project-specific conventions over generic ones)
 - Scope: global or path-specific (use `globs:` for file scoping)
 - Target tools (optional `targets:` array)
@@ -40,7 +42,7 @@ Create rule files in `rules/` with strict guidelines:
 ---
 description: Project-specific API response convention
 targets: [claude-code, cursor]
-globs: ["src/api/**/*.ts"]
+globs: ['src/api/**/*.ts']
 ---
 
 - All endpoints must return the project's `ApiEnvelope<T>` type (never raw objects)
