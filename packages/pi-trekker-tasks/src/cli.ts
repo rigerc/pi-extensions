@@ -78,6 +78,7 @@ export interface CreateTaskOpts {
   title: string;
   description?: string;
   priority?: number;
+  tags?: string;
   epicId?: string;
   parentId?: string;
 }
@@ -87,6 +88,7 @@ export interface UpdateTaskOpts {
   description?: string;
   priority?: number;
   status?: string;
+  tags?: string;
 }
 
 export interface CreateEpicOpts {
@@ -438,6 +440,7 @@ export async function createTask(opts: CreateTaskOpts): Promise<Task> {
   const args: string[] = ['task', 'create', '-t', opts.title];
   if (opts.description) args.push('-d', opts.description);
   if (opts.priority !== undefined) args.push('-p', String(opts.priority));
+  if (opts.tags) args.push('--tags', opts.tags);
   if (opts.epicId) args.push('-e', opts.epicId);
   if (opts.parentId) {
     return createSubtask(opts.parentId, {
@@ -467,6 +470,7 @@ export async function updateTask(id: string, opts: UpdateTaskOpts): Promise<Task
   if (opts.description !== undefined) args.push('-d', opts.description);
   if (opts.priority !== undefined) args.push('-p', String(opts.priority));
   if (opts.status) args.push('-s', opts.status);
+  if (opts.tags !== undefined) args.push('--tags', opts.tags);
   const out = await trekkerCmdRaw(...args);
   return toTask(out.fields);
 }
@@ -545,6 +549,14 @@ export async function readyTasks(): Promise<Task[]> {
 export async function listSubtasks(parentTaskId: string): Promise<Task[]> {
   const out = await trekkerCmdRaw('subtask', 'list', parentTaskId);
   return (out.rows ?? []).map(toTask);
+}
+
+/**
+ * Delete (archive) a task.
+ */
+export async function deleteTask(id: string): Promise<Task> {
+  const out = await trekkerCmdRaw('task', 'delete', id);
+  return toTask(out.fields);
 }
 
 // ---- Initialization check ----
