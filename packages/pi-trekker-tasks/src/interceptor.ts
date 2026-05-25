@@ -29,7 +29,7 @@ export type ParsedToolCall =
         epicId?: string;
       };
     }
-  | { tool: 'TaskList'; args: { status?: string; epicId?: string } }
+  | { tool: 'TaskList'; args: { status?: TaskStatus; epicId?: string } }
   | { tool: 'TaskGet'; args: { id: string } }
   | {
       tool: 'TaskUpdate';
@@ -45,8 +45,11 @@ export type ParsedToolCall =
   | { tool: 'TaskDelete'; args: { id: string } }
   | { tool: 'TaskComment'; args: { id: string; content: string } }
   | { tool: 'TaskSearch'; args: { query: string } }
+  | { tool: 'TaskReady'; args: {} }
+  | { tool: 'TaskHistory'; args: { entity?: string; limit?: number } }
   | { tool: 'EpicCreate'; args: { title: string; description?: string; priority?: TaskPriority } }
   | { tool: 'EpicList'; args: { status?: EpicStatus } }
+  | { tool: 'EpicGet'; args: { id: string } }
   | {
       tool: 'EpicUpdate';
       args: {
@@ -58,7 +61,8 @@ export type ParsedToolCall =
       };
     }
   | { tool: 'DepAdd'; args: { taskId: string; dependsOnId: string } }
-  | { tool: 'DepRemove'; args: { taskId: string; dependsOnId: string } };
+  | { tool: 'DepRemove'; args: { taskId: string; dependsOnId: string } }
+  | { tool: 'DepList'; args: { taskId: string } };
 
 // ── Tokenizer ─────────────────────────────────────────────────────────────────
 
@@ -124,26 +128,24 @@ function toPriority(raw: string | undefined): TaskPriority | undefined {
 /** Map CLI epic status string to EpicStatus. */
 function toEpicStatus(raw: string | undefined): EpicStatus | undefined {
   if (!raw) return undefined;
-  if (raw === 'todo') return 'pending';
-  if (raw === 'in_progress') return 'in_progress';
-  if (raw === 'completed') return 'completed';
-  if (raw === 'archived') return 'deleted';
-  if (raw === 'pending' || raw === 'deleted') return raw as EpicStatus;
+  if (raw === 'todo' || raw === 'in_progress' || raw === 'completed' || raw === 'archived') {
+    return raw;
+  }
   return undefined;
 }
 
 /** Map CLI status string to TaskStatus. */
 function toStatus(raw: string | undefined): TaskStatus | undefined {
   if (!raw) return undefined;
-  if (raw === 'todo') return 'pending';
-  if (raw === 'in_progress') return 'in_progress';
-  if (raw === 'completed') return 'completed';
-  if (raw === 'wont_fix') return 'failed';
-  if (raw === 'archived') return 'deleted';
-  // Allow edb-todo style statuses passed directly
-  if (raw === 'pending') return 'pending';
-  if (raw === 'failed') return 'failed';
-  if (raw === 'deleted') return 'deleted';
+  if (
+    raw === 'todo' ||
+    raw === 'in_progress' ||
+    raw === 'completed' ||
+    raw === 'wont_fix' ||
+    raw === 'archived'
+  ) {
+    return raw;
+  }
   return undefined;
 }
 
@@ -194,12 +196,20 @@ export function parseSingleTrekkerCommand(part: string): ParsedToolCall | null {
   // ── trekker list ──────────────────────────────────────────────────────────
   if (entity === 'list') {
     const { flags } = parseArgs(sub.slice(1));
-    return { tool: 'TaskList', args: { status: flags['--status'] ?? flags['-s'] } };
+    return { tool: 'TaskList', args: { status: toStatus(flags['--status'] ?? flags['-s']) } };
   }
 
   // ── trekker ready ─────────────────────────────────────────────────────────
   if (entity === 'ready') {
-    return { tool: 'TaskList', args: { status: 'todo' } };
+    return { tool: 'TaskReady', args: {} };
+  }
+
+  // ── trekker history ───────────────────────────────────────────────────────
+  if (entity === 'history') {
+    const { flags } = parseArgs(sub.slice(1));
+    const rawLimit = flags['--limit'];
+    const limit = rawLimit ? parseInt(rawLimit, 10) : undefined;
+    return { tool: 'TaskHistory', args: { entity: flags['--entity'], limit } };
   }
 
   // ── trekker search <query> ────────────────────────────────────────────────
@@ -255,7 +265,10 @@ export function parseSingleTrekkerCommand(part: string): ParsedToolCall | null {
       const { flags } = parseArgs(rest);
       return {
         tool: 'TaskList',
-        args: { status: flags['-s'] ?? flags['--status'], epicId: flags['-e'] ?? flags['--epic'] },
+        args: {
+          status: toStatus(flags['-s'] ?? flags['--status']),
+          epicId: flags['-e'] ?? flags['--epic'],
+        },
       };
     }
 
@@ -360,8 +373,7 @@ export function parseSingleTrekkerCommand(part: string): ParsedToolCall | null {
     if (action === 'show' || action === 'get') {
       const id = rest[0];
       if (!id) return null;
-      // No EpicGet Pi tool — fall through to bash
-      return null;
+      return { tool: 'EpicGet', args: { id } };
     }
   }
 
@@ -369,10 +381,12 @@ export function parseSingleTrekkerCommand(part: string): ParsedToolCall | null {
   if (entity === 'dep') {
     const rest = sub.slice(2);
     const [taskId, dependsOnId] = rest;
-    if (!taskId || !dependsOnId) return null;
+    if (!taskId) return null;
 
-    if (action === 'add') return { tool: 'DepAdd', args: { taskId, dependsOnId } };
-    if (action === 'remove') return { tool: 'DepRemove', args: { taskId, dependsOnId } };
+    if (action === 'add' && dependsOnId) return { tool: 'DepAdd', args: { taskId, dependsOnId } };
+    if (action === 'remove' && dependsOnId)
+      return { tool: 'DepRemove', args: { taskId, dependsOnId } };
+    if (action === 'list') return { tool: 'DepList', args: { taskId } };
   }
 
   return null;
@@ -439,9 +453,7 @@ export async function dispatchToolCall(store: TrekkerStore, call: ParsedToolCall
       if (tasks.length === 0) return 'No tasks found.';
       let filtered = tasks;
       if (call.args.status) {
-        filtered = filtered.filter(
-          (t) => t.status === toStatus(call.args.status) || t.status === call.args.status,
-        );
+        filtered = filtered.filter((t) => t.status === call.args.status);
       }
       if (call.args.epicId) {
         filtered = filtered.filter((t) => t.epicId === call.args.epicId);
@@ -496,6 +508,16 @@ export async function dispatchToolCall(store: TrekkerStore, call: ParsedToolCall
       return results.map((r) => `[${r.type}] ${r.id} ${r.title ?? ''} — ${r.snippet}`).join('\n');
     }
 
+    case 'TaskReady': {
+      const tasks = await store.ready();
+      if (tasks.length === 0) return 'No ready tasks found.';
+      return tasks.map((t) => `○ [${t.priority}] ${t.id} ${t.content}`).join('\n');
+    }
+
+    case 'TaskHistory': {
+      return store.history({ entity: call.args.entity, limit: call.args.limit });
+    }
+
     case 'EpicCreate': {
       const epic = await store.createEpic({
         title: call.args.title,
@@ -516,6 +538,18 @@ export async function dispatchToolCall(store: TrekkerStore, call: ParsedToolCall
         .join('\n');
     }
 
+    case 'EpicGet': {
+      const epic = await store.getEpic(call.args.id);
+      const lines = [
+        `ID:          ${epic.id}`,
+        `Title:       ${epic.title}`,
+        `Status:      ${epic.status}`,
+        `Priority:    ${epic.priority}`,
+      ];
+      if (epic.description) lines.push(`Description: ${epic.description}`);
+      return lines.join('\n');
+    }
+
     case 'EpicUpdate': {
       const epic = await store.updateEpic(call.args.id, {
         title: call.args.title,
@@ -534,6 +568,12 @@ export async function dispatchToolCall(store: TrekkerStore, call: ParsedToolCall
     case 'DepRemove': {
       await store.removeDep(call.args.taskId, call.args.dependsOnId);
       return `Dependency removed: ${call.args.taskId} no longer depends on ${call.args.dependsOnId}.`;
+    }
+
+    case 'DepList': {
+      const deps = await store.listDeps(call.args.taskId);
+      if (deps.length === 0) return `No dependencies for ${call.args.taskId}.`;
+      return deps.map((d) => `${d.taskId} depends on ${d.dependsOnTaskId}`).join('\n');
     }
   }
 }
@@ -590,15 +630,23 @@ function callToCliHint(call: ParsedToolCall): string {
       return `trekker comment add ${call.args.id}`;
     case 'TaskSearch':
       return `trekker search "${call.args.query}"`;
+    case 'TaskReady':
+      return 'trekker ready';
+    case 'TaskHistory':
+      return call.args.entity ? `trekker history --entity ${call.args.entity}` : 'trekker history';
     case 'EpicCreate':
       return `trekker epic create -t "${call.args.title}"`;
     case 'EpicList':
       return call.args.status ? `trekker epic list -s ${call.args.status}` : 'trekker epic list';
+    case 'EpicGet':
+      return `trekker epic show ${call.args.id}`;
     case 'EpicUpdate':
       return `trekker epic update ${call.args.id}`;
     case 'DepAdd':
       return `trekker dep add ${call.args.taskId} ${call.args.dependsOnId}`;
     case 'DepRemove':
       return `trekker dep remove ${call.args.taskId} ${call.args.dependsOnId}`;
+    case 'DepList':
+      return `trekker dep list ${call.args.taskId}`;
   }
 }

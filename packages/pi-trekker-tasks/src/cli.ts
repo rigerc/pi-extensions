@@ -53,6 +53,12 @@ export interface Comment {
   updatedAt: string;
 }
 
+export interface Dependency {
+  taskId: string;
+  dependsOnTaskId: string;
+  createdAt: string;
+}
+
 export interface SearchResult {
   type: 'epic' | 'task' | 'subtask' | 'comment';
   id: string;
@@ -68,10 +74,14 @@ export type EntityType = 'epic' | 'task' | 'subtask' | 'comment';
 export interface TaskFilters {
   status?: string;
   epic?: string;
+  limit?: number;
+  page?: number;
 }
 
 export interface EpicFilters {
   status?: string;
+  limit?: number;
+  page?: number;
 }
 
 export interface CreateTaskOpts {
@@ -89,6 +99,8 @@ export interface UpdateTaskOpts {
   priority?: number;
   status?: string;
   tags?: string;
+  epicId?: string;
+  removeEpic?: boolean;
 }
 
 export interface CreateEpicOpts {
@@ -102,6 +114,14 @@ export interface UpdateEpicOpts {
   description?: string;
   priority?: number;
   status?: string;
+}
+
+export interface HistoryFilters {
+  limit?: number;
+  entity?: string;
+  type?: string;
+  action?: string;
+  since?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,12 +441,41 @@ export async function trekkerCmd(...args: string[]): Promise<ToonOutput> {
   return trekkerCmdRaw(...args);
 }
 
+export async function trekkerText(...args: string[]): Promise<string> {
+  const allArgs = [...args, '--toon'];
+  return mutex.acquire(async () => {
+    return retryWithBackoff(() => {
+      return new Promise<string>((resolve, reject) => {
+        execFile(
+          'trekker',
+          allArgs,
+          {
+            encoding: 'utf-8',
+            timeout: 30_000,
+            maxBuffer: 10 * 1024 * 1024,
+          },
+          (err, stdout, stderr) => {
+            if (err) {
+              const msg = stderr?.trim() || err.message;
+              reject(new Error(`trekker failed: ${msg}`));
+              return;
+            }
+            resolve(stdout.trim());
+          },
+        );
+      });
+    });
+  });
+}
+
 // ---- Tasks ----
 
 export async function listTasks(filters?: TaskFilters): Promise<Task[]> {
   const args: string[] = ['task', 'list'];
   if (filters?.status) args.push('-s', filters.status);
   if (filters?.epic) args.push('-e', filters.epic);
+  if (filters?.limit !== undefined) args.push('--limit', String(filters.limit));
+  if (filters?.page !== undefined) args.push('--page', String(filters.page));
   const out = await trekkerCmdRaw(...args);
   return (out.rows ?? []).map(toTask);
 }
@@ -471,6 +520,8 @@ export async function updateTask(id: string, opts: UpdateTaskOpts): Promise<Task
   if (opts.priority !== undefined) args.push('-p', String(opts.priority));
   if (opts.status) args.push('-s', opts.status);
   if (opts.tags !== undefined) args.push('--tags', opts.tags);
+  if (opts.epicId) args.push('-e', opts.epicId);
+  if (opts.removeEpic) args.push('--no-epic');
   const out = await trekkerCmdRaw(...args);
   return toTask(out.fields);
 }
@@ -491,6 +542,16 @@ export async function listComments(taskId: string): Promise<Comment[]> {
   return (out.rows ?? []).map(toComment);
 }
 
+export async function updateComment(commentId: string, content: string): Promise<Comment> {
+  const out = await trekkerCmdRaw('comment', 'update', commentId, '-c', content);
+  return toComment(out.fields);
+}
+
+export async function deleteComment(commentId: string): Promise<Comment> {
+  const out = await trekkerCmdRaw('comment', 'delete', commentId);
+  return toComment(out.fields);
+}
+
 // ---- Epics ----
 
 export async function createEpic(opts: CreateEpicOpts): Promise<Epic> {
@@ -504,6 +565,8 @@ export async function createEpic(opts: CreateEpicOpts): Promise<Epic> {
 export async function listEpics(filters?: EpicFilters): Promise<Epic[]> {
   const args: string[] = ['epic', 'list'];
   if (filters?.status) args.push('-s', filters.status);
+  if (filters?.limit !== undefined) args.push('--limit', String(filters.limit));
+  if (filters?.page !== undefined) args.push('--page', String(filters.page));
   const out = await trekkerCmdRaw(...args);
   return (out.rows ?? []).map(toEpic);
 }
@@ -520,6 +583,11 @@ export async function updateEpic(id: string, opts: UpdateEpicOpts): Promise<Epic
   if (opts.priority !== undefined) args.push('-p', String(opts.priority));
   if (opts.status) args.push('-s', opts.status);
   const out = await trekkerCmdRaw(...args);
+  return toEpic(out.fields);
+}
+
+export async function deleteEpic(id: string): Promise<Epic> {
+  const out = await trekkerCmdRaw('epic', 'delete', id);
   return toEpic(out.fields);
 }
 
@@ -551,12 +619,45 @@ export async function listSubtasks(parentTaskId: string): Promise<Task[]> {
   return (out.rows ?? []).map(toTask);
 }
 
+export async function updateSubtask(id: string, opts: UpdateTaskOpts): Promise<Task> {
+  const args: string[] = ['subtask', 'update', id];
+  if (opts.title) args.push('-t', opts.title);
+  if (opts.description !== undefined) args.push('-d', opts.description);
+  if (opts.priority !== undefined) args.push('-p', String(opts.priority));
+  if (opts.status) args.push('-s', opts.status);
+  const out = await trekkerCmdRaw(...args);
+  return toTask(out.fields);
+}
+
+export async function deleteSubtask(id: string): Promise<Task> {
+  const out = await trekkerCmdRaw('subtask', 'delete', id);
+  return toTask(out.fields);
+}
+
 /**
  * Delete (archive) a task.
  */
 export async function deleteTask(id: string): Promise<Task> {
   const out = await trekkerCmdRaw('task', 'delete', id);
   return toTask(out.fields);
+}
+
+export async function history(filters?: HistoryFilters): Promise<string> {
+  const args: string[] = ['history'];
+  if (filters?.limit !== undefined) args.push('--limit', String(filters.limit));
+  if (filters?.entity) args.push('--entity', filters.entity);
+  if (filters?.type) args.push('--type', filters.type);
+  if (filters?.action) args.push('--action', filters.action);
+  if (filters?.since) args.push('--since', filters.since);
+  return trekkerText(...args);
+}
+
+export async function quickstart(): Promise<string> {
+  return trekkerText('quickstart');
+}
+
+export async function initTrekker(): Promise<string> {
+  return trekkerText('init');
 }
 
 // ---- Initialization check ----

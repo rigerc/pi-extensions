@@ -34,7 +34,7 @@ import { AutoClearManager } from './auto-clear.js';
 import { openTrekkerTasksMenu, TrekkerTasksViewComponent } from './component.js';
 import { loadConfig } from './config.js';
 import type { TrekkerTasksConfig } from './config.js';
-import { checkTrekkerAvailable } from './cli.js';
+import { checkTrekkerAvailable, clearAvailabilityCache } from './cli.js';
 import { interceptBashCommand } from './interceptor.js';
 import { buildSystemPromptBlock } from './prompt.js';
 import {
@@ -47,11 +47,23 @@ import {
   TaskCommentListParams,
   TaskListSubtasksParams,
   TaskSearchParams,
+  TaskReadyParams,
+  TaskHistoryParams,
+  TaskCompleteParams,
   EpicCreateParams,
   EpicListParams,
+  EpicGetParams,
   EpicUpdateParams,
+  EpicDeleteParams,
   DepAddParams,
   DepRemoveParams,
+  DepListParams,
+  CommentUpdateParams,
+  CommentDeleteParams,
+  SubtaskUpdateParams,
+  SubtaskDeleteParams,
+  TrekkerInitParams,
+  TrekkerQuickstartParams,
 } from './schemas.js';
 import { priorityColor, priorityLabel, renderTaskListResult, TrekkerWidget } from './state.js';
 import { TrekkerStore } from './trekker-store.js';
@@ -69,17 +81,29 @@ const TASK_TOOL_NAMES = new Set([
   'TaskCommentList',
   'TaskListSubtasks',
   'TaskSearch',
+  'TaskReady',
+  'TaskHistory',
+  'TaskComplete',
   'EpicCreate',
   'EpicList',
+  'EpicGet',
   'EpicUpdate',
+  'EpicDelete',
   'DepAdd',
   'DepRemove',
+  'DepList',
+  'CommentUpdate',
+  'CommentDelete',
+  'SubtaskUpdate',
+  'SubtaskDelete',
+  'TrekkerInit',
+  'TrekkerQuickstart',
 ]);
 const REMINDER_INTERVAL = 4;
 const AUTO_CLEAR_DELAY = 4;
 
 const SYSTEM_REMINDER = `<system-reminder>
-The trekker task tools haven't been used recently. If you're working on tasks, consider using TaskCreate to track new work and TaskUpdate to update status (set to in_progress when starting, completed when done). Use TaskList to review open work. Ignore this if not applicable. Never mention this reminder to the user.
+The trekker task tools haven't been used recently. If you're working on tasks, consider using TaskSearch to find related work, TaskCreate to track new work, TaskUpdate to set in_progress when starting, and TaskComplete when done. Use TaskReady to review unblocked work. Ignore this if not applicable. Never mention this reminder to the user.
 </system-reminder>`;
 
 // ── Extension entry point ──────────────────────────────────────────────────────
@@ -100,6 +124,7 @@ export default function trekkerTasksExtension(pi: ExtensionAPI): void {
   // ── Turn tracking ──────────────────────────────────────────────────────────
   let currentTurn = 0;
   let lastTaskToolUseTurn = 0;
+  let lastSearchTurn = -Infinity;
   let reminderInjectedThisCycle = false;
   let trekkerUsedThisTurn = false;
 
@@ -114,6 +139,7 @@ export default function trekkerTasksExtension(pi: ExtensionAPI): void {
   pi.on('session_start', async (event, ctx) => {
     cwd = ctx.cwd;
     cfg = loadConfig(cwd);
+    clearAvailabilityCache();
     enabled = checkTrekkerAvailable(cwd);
 
     if (!enabled) return;
@@ -122,6 +148,7 @@ export default function trekkerTasksExtension(pi: ExtensionAPI): void {
     autoClear.reset();
     currentTurn = 0;
     lastTaskToolUseTurn = 0;
+    lastSearchTurn = -Infinity;
     reminderInjectedThisCycle = false;
     trekkerUsedThisTurn = false;
 
@@ -142,7 +169,7 @@ export default function trekkerTasksExtension(pi: ExtensionAPI): void {
     await store.refresh();
     widget.update();
 
-    const block = buildSystemPromptBlock(store);
+    const block = await buildSystemPromptBlock(store);
     if (!block) return;
     return { systemPrompt: `${event.systemPrompt}\n\n${block}` };
   });
@@ -267,8 +294,12 @@ export default function trekkerTasksExtension(pi: ExtensionAPI): void {
       });
       widget.update();
 
+      const searchHint =
+        currentTurn - lastSearchTurn > 4
+          ? ' Search-first reminder: run TaskSearch before creating related future tasks to avoid duplicates.'
+          : '';
       return {
-        content: [{ type: 'text', text: `Task ${task.id} created: ${task.content}` }],
+        content: [{ type: 'text', text: `Task ${task.id} created: ${task.content}${searchHint}` }],
         details: { tasks: store.list() },
       };
     },
@@ -302,7 +333,7 @@ export default function trekkerTasksExtension(pi: ExtensionAPI): void {
     description: `List all trekker tasks with their current status and priority.
 
 Use to:
-- See what work is pending or in progress
+- See what work is todo or in progress
 - Check overall progress
 - Find tasks to start after completing one
 - Filter by status or epic`,
@@ -326,6 +357,8 @@ Use to:
       if (filterEpic) {
         tasks = tasks.filter((t) => t.epicId === filterEpic);
       }
+      const limit = params.limit as number | undefined;
+      const page = (params.page as number | undefined) ?? 1;
       if (tasks.length === 0) {
         const parts: string[] = [];
         if (filterStatus) parts.push(`status=${filterStatus}`);
@@ -338,16 +371,20 @@ Use to:
       }
 
       const statusOrder: Record<string, number> = {
-        pending: 0,
+        todo: 0,
         in_progress: 1,
         completed: 2,
-        failed: 3,
-        deleted: 4,
+        wont_fix: 3,
+        archived: 4,
       };
-      const sorted = [...tasks].sort((a, b) => {
+      let sorted = [...tasks].sort((a, b) => {
         const so = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
         return so !== 0 ? so : a.id.localeCompare(b.id);
       });
+      if (limit && limit > 0) {
+        const start = Math.max(0, page - 1) * limit;
+        sorted = sorted.slice(start, start + limit);
+      }
 
       const lines = sorted.map((t) => {
         let line = `[${t.status}] [${t.priority}] ${t.id} ${t.content}`;
@@ -440,11 +477,11 @@ Use to:
     description: `Update a trekker task's status, title, description, priority, or tags.
 
 Status values:
-- **pending** (trekker: todo) — not started
+- **todo** — not started
 - **in_progress** — set BEFORE starting work
 - **completed** — set when done
-- **failed** (trekker: wont_fix) — abandoned or errored
-- **deleted** (trekker: archived) — remove from view`,
+- **wont_fix** — abandoned or intentionally not completed
+- **archived** — remove from active views`,
 
     parameters: TaskUpdateParams,
 
@@ -459,6 +496,8 @@ Status values:
         priority: params.priority as TaskPriority | undefined,
         status: params.status as TaskStatus | undefined,
         tags: params.tags as string | undefined,
+        epicId: params.epicId as string | undefined,
+        removeEpic: params.removeEpic as boolean | undefined,
       });
 
       // Track completions for auto-clear
@@ -629,6 +668,75 @@ Use for:
     },
   });
 
+  // ── Tool: CommentUpdate ───────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'CommentUpdate',
+    label: 'CommentUpdate',
+    description: `Update a Trekker comment by comment ID.`,
+    parameters: CommentUpdateParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const comment = await store.updateComment(
+        params.commentId as string,
+        params.content as string,
+      );
+      return {
+        content: [{ type: 'text', text: `Comment ${comment.id} updated.` }],
+        details: { comment },
+      };
+    },
+
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('CommentUpdate '))}${theme.fg('muted', String(args.commentId ?? ''))}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, _opts, theme) {
+      const first = result.content[0];
+      return new Text(theme.fg('success', first?.type === 'text' ? first.text : ''), 0, 0);
+    },
+  });
+
+  // ── Tool: CommentDelete ───────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'CommentDelete',
+    label: 'CommentDelete',
+    description: `Delete a Trekker comment by comment ID.`,
+    parameters: CommentDeleteParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const comment = await store.deleteComment(params.commentId as string);
+      return {
+        content: [{ type: 'text', text: `Comment ${comment.id} deleted.` }],
+        details: { comment },
+      };
+    },
+
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('CommentDelete '))}${theme.fg('muted', String(args.commentId ?? ''))}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, _opts, theme) {
+      const first = result.content[0];
+      return new Text(theme.fg('dim', first?.type === 'text' ? first.text : ''), 0, 0);
+    },
+  });
+
   // ── Tool: TaskListSubtasks ─────────────────────────────────────────────────
 
   pi.registerTool({
@@ -638,7 +746,7 @@ Use for:
 
 Use for:
 - Checking progress on a multi-step task
-- Seeing which subtasks are in progress, pending, or completed`,
+- Seeing which subtasks are in progress, todo, or completed`,
 
     parameters: TaskListSubtasksParams,
 
@@ -689,6 +797,87 @@ Use for:
     },
   });
 
+  // ── Tool: SubtaskUpdate ───────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'SubtaskUpdate',
+    label: 'SubtaskUpdate',
+    description: `Update a Trekker subtask's status, title, description, or priority.`,
+    parameters: SubtaskUpdateParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const subtask = await store.updateSubtask(params.id as string, {
+        content: params.content as string | undefined,
+        description: params.description as string | undefined,
+        priority: params.priority as TaskPriority | undefined,
+        status: params.status as TaskStatus | undefined,
+      });
+      widget.update();
+      return {
+        content: [{ type: 'text', text: `Subtask ${subtask.id} updated → ${subtask.status}` }],
+        details: { subtask, tasks: store.list() },
+      };
+    },
+
+    renderCall(args, theme) {
+      const id = String(args.id ?? '');
+      const status = args.status ? theme.fg('muted', ` → ${args.status}`) : '';
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('SubtaskUpdate '))}${theme.fg('accent', id)}${status}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, { expanded }, theme) {
+      return TrekkerTasksViewComponent.renderTaskResult(
+        (result.details as any)?.tasks ?? [],
+        expanded,
+        theme,
+      );
+    },
+  });
+
+  // ── Tool: SubtaskDelete ───────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'SubtaskDelete',
+    label: 'SubtaskDelete',
+    description: `Archive/delete a Trekker subtask by ID.`,
+    parameters: SubtaskDeleteParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const subtask = await store.deleteSubtask(params.id as string);
+      widget.update();
+      return {
+        content: [{ type: 'text', text: `Subtask ${subtask.id} archived.` }],
+        details: { subtask, tasks: store.list() },
+      };
+    },
+
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('SubtaskDelete '))}${theme.fg('muted', String(args.id ?? ''))}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, { expanded }, theme) {
+      return TrekkerTasksViewComponent.renderTaskResult(
+        (result.details as any)?.tasks ?? [],
+        expanded,
+        theme,
+      );
+    },
+  });
+
   // ── Tool: TaskSearch ───────────────────────────────────────────────────────
 
   pi.registerTool({
@@ -706,7 +895,8 @@ Useful for finding related work, past decisions, or tasks by keyword.`,
         return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
       widget.setUICtx(ctx.ui);
 
-      const results = await store.search(params.query as string);
+      lastSearchTurn = currentTurn;
+      const results = await store.search(params.query as string, params.type as any);
       if (results.length === 0) {
         return {
           content: [{ type: 'text', text: `No results for "${params.query}".` }],
@@ -739,6 +929,127 @@ Useful for finding related work, past decisions, or tasks by keyword.`,
             `${theme.fg('accent', r.id)}  ${theme.fg('dim', r.type)}  ${r.snippet?.slice(0, 60) ?? ''}`,
         );
       return new Text(lines.join('\n'), 0, 0);
+    },
+  });
+
+  // ── Tool: TaskReady ───────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'TaskReady',
+    label: 'TaskReady',
+    description: `Show todo tasks that are ready to work on according to Trekker dependency state.
+
+Use after completing work or when deciding what to start next.`,
+    parameters: TaskReadyParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const ready = await store.ready();
+      const limit = params.limit as number | undefined;
+      const tasks = limit ? ready.slice(0, limit) : ready;
+      if (tasks.length === 0) {
+        return { content: [{ type: 'text', text: 'No ready tasks found.' }], details: { tasks } };
+      }
+      const lines = tasks.map((t) => `[${t.status}] [${t.priority}] ${t.id} ${t.content}`);
+      return {
+        content: [{ type: 'text', text: lines.join('\n') }],
+        details: { tasks },
+      };
+    },
+
+    renderCall(_args, theme) {
+      return new Text(theme.fg('toolTitle', theme.bold('TaskReady')), 0, 0);
+    },
+
+    renderResult(result, { expanded }, theme) {
+      return TrekkerTasksViewComponent.renderTaskResult(
+        (result.details as any)?.tasks ?? [],
+        expanded,
+        theme,
+      );
+    },
+  });
+
+  // ── Tool: TaskHistory ─────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'TaskHistory',
+    label: 'TaskHistory',
+    description: `Show Trekker history for context recovery and conflict checks.
+
+Use before modifying existing tasks, when resuming work, or when investigating recent changes.`,
+    parameters: TaskHistoryParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const text = await store.history({
+        limit: params.limit as number | undefined,
+        entity: params.entity as string | undefined,
+        type: params.type as string | undefined,
+        action: params.action as string | undefined,
+        since: params.since as string | undefined,
+      });
+      return { content: [{ type: 'text', text: text || 'No history found.' }], details: { text } };
+    },
+
+    renderCall(args, theme) {
+      const entity = args.entity ? ` ${String(args.entity)}` : '';
+      return new Text(`${theme.fg('toolTitle', theme.bold('TaskHistory'))}${entity}`, 0, 0);
+    },
+
+    renderResult(result, _opts, theme) {
+      const text = ((result.details as any)?.text ?? '').split('\n').slice(0, 8).join('\n');
+      return new Text(theme.fg('muted', text || 'No history'), 0, 0);
+    },
+  });
+
+  // ── Tool: TaskComplete ────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'TaskComplete',
+    label: 'TaskComplete',
+    description: `Complete a task using the required Trekker workflow: add a summary comment, mark completed, then show ready tasks.`,
+    parameters: TaskCompleteParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const taskId = params.id as string;
+      const summary = params.summary as string;
+      await store.comment(taskId, summary.startsWith('Summary:') ? summary : `Summary: ${summary}`);
+      const task = await store.update(taskId, { status: 'completed' });
+      autoClear.trackCompletion(task.id, currentTurn);
+      const ready = await store.ready();
+      widget.update();
+      const readyText =
+        ready.length > 0
+          ? `\n\nNext ready tasks:\n${ready.map((t) => `[${t.priority}] ${t.id} ${t.content}`).join('\n')}`
+          : '\n\nNo ready tasks found.';
+      return {
+        content: [{ type: 'text', text: `Task ${task.id} completed.${readyText}` }],
+        details: { task, ready, tasks: store.list() },
+      };
+    },
+
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('TaskComplete '))}${theme.fg('accent', String(args.id ?? ''))}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, { expanded }, theme) {
+      return TrekkerTasksViewComponent.renderTaskResult(
+        (result.details as any)?.tasks ?? [],
+        expanded,
+        theme,
+      );
     },
   });
 
@@ -801,7 +1112,13 @@ Use to find the right epicId before creating tasks, or to review overall progres
       if (!enabled)
         return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
       widget.setUICtx(ctx.ui);
-      const epics = await store.listEpics(params.status as EpicStatus | undefined);
+      let epics = await store.listEpics(params.status as EpicStatus | undefined);
+      const limit = params.limit as number | undefined;
+      const page = (params.page as number | undefined) ?? 1;
+      if (limit && limit > 0) {
+        const start = Math.max(0, page - 1) * limit;
+        epics = epics.slice(start, start + limit);
+      }
       if (epics.length === 0) {
         return { content: [{ type: 'text', text: 'No epics found.' }], details: { epics: [] } };
       }
@@ -835,6 +1152,48 @@ Use to find the right epicId before creating tasks, or to review overall progres
     },
   });
 
+  // ── Tool: EpicGet ─────────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'EpicGet',
+    label: 'EpicGet',
+    description: `Retrieve full details for a Trekker epic by ID.`,
+    parameters: EpicGetParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const epic = await store.getEpic(params.id as string);
+      const lines = [
+        `ID:       ${epic.id}`,
+        `Title:    ${epic.title}`,
+        `Status:   ${epic.status}`,
+        `Priority: ${epic.priority}`,
+      ];
+      if (epic.description) lines.push(`Desc:     ${epic.description}`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], details: { epic } };
+    },
+
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('EpicGet '))}${theme.fg('muted', String(args.id ?? ''))}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, _opts, theme) {
+      const epic = (result.details as any)?.epic;
+      if (!epic) return new Text(theme.fg('error', 'Epic not found'), 0, 0);
+      return new Text(
+        `${theme.fg('accent', epic.id)}  ${theme.fg('muted', epic.status)}\n${epic.title}`,
+        0,
+        0,
+      );
+    },
+  });
+
   // ── Tool: EpicUpdate ───────────────────────────────────────────────────────
 
   pi.registerTool({
@@ -842,7 +1201,7 @@ Use to find the right epicId before creating tasks, or to review overall progres
     label: 'EpicUpdate',
     description: `Update an epic's status, title, description, or priority.
 
-Status values: pending, in_progress, completed, deleted (archives in trekker).`,
+Status values: todo, in_progress, completed, archived.`,
     parameters: EpicUpdateParams,
 
     async execute(_id, params, _signal, _onUpdate, ctx) {
@@ -879,6 +1238,40 @@ Status values: pending, in_progress, completed, deleted (archives in trekker).`,
         0,
         0,
       );
+    },
+  });
+
+  // ── Tool: EpicDelete ───────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'EpicDelete',
+    label: 'EpicDelete',
+    description: `Archive/delete a Trekker epic by ID.`,
+    parameters: EpicDeleteParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const epic = await store.deleteEpic(params.id as string);
+      return {
+        content: [{ type: 'text', text: `Epic ${epic.id} archived: ${epic.title}` }],
+        details: { epic },
+      };
+    },
+
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('EpicDelete '))}${theme.fg('muted', String(args.id ?? ''))}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, _opts, theme) {
+      const epic = (result.details as any)?.epic;
+      if (!epic) return new Text(theme.fg('error', 'Epic not found'), 0, 0);
+      return new Text(theme.fg('dim', `${epic.id} ${epic.status}`), 0, 0);
     },
   });
 
@@ -957,6 +1350,106 @@ Use to make execution order explicit when tasks must run in sequence.`,
     renderResult(result, _opts, theme) {
       const first = result.content[0];
       return new Text(theme.fg('dim', first?.type === 'text' ? first.text : ''), 0, 0);
+    },
+  });
+
+  // ── Tool: DepList ─────────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'DepList',
+    label: 'DepList',
+    description: `List task dependencies before starting or changing task status.`,
+    parameters: DepListParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const deps = await store.listDeps(params.taskId as string);
+      if (deps.length === 0) {
+        return {
+          content: [{ type: 'text', text: `No dependencies for ${params.taskId}.` }],
+          details: { deps },
+        };
+      }
+      const lines = deps.map((d) => `${d.taskId} depends on ${d.dependsOnTaskId}`);
+      return { content: [{ type: 'text', text: lines.join('\n') }], details: { deps } };
+    },
+
+    renderCall(args, theme) {
+      return new Text(
+        `${theme.fg('toolTitle', theme.bold('DepList '))}${theme.fg('muted', String(args.taskId ?? ''))}`,
+        0,
+        0,
+      );
+    },
+
+    renderResult(result, _opts, theme) {
+      const first = result.content[0];
+      return new Text(theme.fg('muted', first?.type === 'text' ? first.text : ''), 0, 0);
+    },
+  });
+
+  // ── Tool: TrekkerQuickstart ───────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'TrekkerQuickstart',
+    label: 'TrekkerQuickstart',
+    description: `Show Trekker's token-efficient quickstart guide.`,
+    parameters: TrekkerQuickstartParams,
+
+    async execute(_id, _params, _signal, _onUpdate, ctx) {
+      if (!enabled)
+        return { content: [{ type: 'text', text: 'Trekker not available.' }], details: null };
+      widget.setUICtx(ctx.ui);
+      const text = await store.quickstart();
+      return { content: [{ type: 'text', text }], details: { text } };
+    },
+
+    renderCall(_args, theme) {
+      return new Text(theme.fg('toolTitle', theme.bold('TrekkerQuickstart')), 0, 0);
+    },
+
+    renderResult(result, _opts, theme) {
+      const text = ((result.details as any)?.text ?? '').split('\n').slice(0, 8).join('\n');
+      return new Text(theme.fg('muted', text), 0, 0);
+    },
+  });
+
+  // ── Tool: TrekkerInit ─────────────────────────────────────────────────────
+
+  pi.registerTool({
+    name: 'TrekkerInit',
+    label: 'TrekkerInit',
+    description: `Initialize Trekker in the current project. Requires confirm=true.`,
+    parameters: TrekkerInitParams,
+
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      if (!params.confirm) {
+        return {
+          content: [{ type: 'text', text: 'TrekkerInit cancelled: confirm must be true.' }],
+          details: null,
+        };
+      }
+      widget.setUICtx(ctx.ui);
+      const text = await store.init();
+      clearAvailabilityCache();
+      enabled = checkTrekkerAvailable(cwd);
+      await store.refresh();
+      widget.update();
+      return {
+        content: [{ type: 'text', text: text || 'Trekker initialized.' }],
+        details: { text },
+      };
+    },
+
+    renderCall(_args, theme) {
+      return new Text(theme.fg('toolTitle', theme.bold('TrekkerInit')), 0, 0);
+    },
+
+    renderResult(result, _opts, theme) {
+      const first = result.content[0];
+      return new Text(theme.fg('success', first?.type === 'text' ? first.text : ''), 0, 0);
     },
   });
 

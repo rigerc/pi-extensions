@@ -1,7 +1,7 @@
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-/** edb-todo-compatible status, mapped from trekker's native statuses. */
-export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'deleted';
+/** Trekker-native task status. */
+export type TaskStatus = 'todo' | 'in_progress' | 'completed' | 'wont_fix' | 'archived';
 export type TaskPriority = 'urgent' | 'high' | 'medium' | 'low' | 'lowest';
 
 export interface Task {
@@ -19,24 +19,7 @@ export interface Task {
 
 // ── Status mapping ─────────────────────────────────────────────────────────────
 
-export type TrekkerStatus = 'todo' | 'in_progress' | 'completed' | 'wont_fix' | 'archived';
 export type TrekkerPriority = 0 | 1 | 2 | 3 | 4 | 5;
-
-export function mapStatus(s: TrekkerStatus): TaskStatus {
-  if (s === 'todo') return 'pending';
-  if (s === 'in_progress') return 'in_progress';
-  if (s === 'completed') return 'completed';
-  if (s === 'wont_fix') return 'failed';
-  return 'deleted'; // archived
-}
-
-export function unmapStatus(s: TaskStatus): TrekkerStatus {
-  if (s === 'pending') return 'todo';
-  if (s === 'in_progress') return 'in_progress';
-  if (s === 'completed') return 'completed';
-  if (s === 'failed') return 'wont_fix';
-  return 'archived'; // deleted
-}
 
 export function mapPriority(p: number): TaskPriority {
   if (p <= 0) return 'urgent';
@@ -56,8 +39,8 @@ export function unmapPriority(p: TaskPriority): number {
 
 // ── Epic types ─────────────────────────────────────────────────────────────────
 
-/** Epics use the same priority/status model as tasks (archived → deleted). */
-export type EpicStatus = TaskStatus;
+/** Trekker-native epic status. */
+export type EpicStatus = 'todo' | 'in_progress' | 'completed' | 'archived';
 
 export interface Epic {
   id: string;
@@ -69,30 +52,14 @@ export interface Epic {
   updatedAt: string;
 }
 
-export type TrekkerEpicStatus = 'todo' | 'in_progress' | 'completed' | 'archived';
-
-export function mapEpicStatus(s: TrekkerEpicStatus): EpicStatus {
-  if (s === 'todo') return 'pending';
-  if (s === 'in_progress') return 'in_progress';
-  if (s === 'completed') return 'completed';
-  return 'deleted'; // archived
-}
-
-export function unmapEpicStatus(s: EpicStatus): TrekkerEpicStatus {
-  if (s === 'pending') return 'todo';
-  if (s === 'in_progress') return 'in_progress';
-  if (s === 'completed') return 'completed';
-  return 'archived';
-}
-
 // ── Visual constants ───────────────────────────────────────────────────────────
 
 export const STATUS_ICON: Record<TaskStatus, string> = {
-  pending: '○',
+  todo: '○',
   in_progress: '●',
   completed: '✓',
-  failed: '✗',
-  deleted: '✗',
+  wont_fix: '✗',
+  archived: '✗',
 };
 
 export const PRIORITY_ORDER: Record<TaskPriority, number> = {

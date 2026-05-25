@@ -1,3 +1,4 @@
 {
-  ".": "0.1.5"
+  "packages/pi-trekker-tasks": "0.1.5",
+  "packages/pi-skillshare": "0.1.5"
 }

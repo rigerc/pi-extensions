@@ -46,10 +46,10 @@ jobs:
         run: npm ci
 
       - name: Validate package contents
-        run: npm pack --dry-run
+        run: npm pack -ws --dry-run
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish -ws --access public
 
       - name: Verify signatures
         run: npm audit signatures

@@ -14,12 +14,22 @@ import {
   updateTask as cliUpdateTask,
   addComment as cliAddComment,
   listComments as cliListComments,
+  updateComment as cliUpdateComment,
+  deleteComment as cliDeleteComment,
   deleteTask as cliDeleteTask,
   listSubtasks as cliListSubtasks,
+  updateSubtask as cliUpdateSubtask,
+  deleteSubtask as cliDeleteSubtask,
   searchTrekker,
   createEpic as cliCreateEpic,
   listEpics as cliListEpics,
+  getEpic as cliGetEpic,
   updateEpic as cliUpdateEpic,
+  deleteEpic as cliDeleteEpic,
+  readyTasks as cliReadyTasks,
+  history as cliHistory,
+  quickstart as cliQuickstart,
+  initTrekker as cliInitTrekker,
   trekkerCmd,
   type Task as CliTask,
   type Epic as CliEpic,
@@ -29,14 +39,12 @@ import {
   type CreateEpicOpts,
   type UpdateEpicOpts,
   type SearchResult,
+  type Dependency,
+  type HistoryFilters,
 } from './cli.js';
 import {
-  mapStatus,
   mapPriority,
-  unmapStatus,
   unmapPriority,
-  mapEpicStatus,
-  unmapEpicStatus,
   type Task,
   type Epic,
   type TaskPriority,
@@ -51,7 +59,7 @@ function fromCliEpic(e: CliEpic): Epic {
     id: e.id,
     title: e.title,
     description: e.description ?? undefined,
-    status: mapEpicStatus(e.status as any),
+    status: e.status,
     priority: mapPriority(e.priority),
     createdAt: e.createdAt,
     updatedAt: e.updatedAt,
@@ -63,7 +71,7 @@ function fromCliTask(t: CliTask): Task {
     id: t.id,
     content: t.title,
     description: t.description ?? undefined,
-    status: mapStatus(t.status),
+    status: t.status,
     priority: mapPriority(t.priority),
     parentId: t.parentTaskId ?? undefined,
     epicId: t.epicId ?? undefined,
@@ -122,9 +130,9 @@ export class TrekkerStore {
     return this.cache.find((t) => t.id === id);
   }
 
-  /** Active tasks: in_progress or pending, not hidden. */
+  /** Active tasks: in_progress or todo, not hidden. */
   activeTasks(): Task[] {
-    return this.list().filter((t) => t.status === 'in_progress' || t.status === 'pending');
+    return this.list().filter((t) => t.status === 'in_progress' || t.status === 'todo');
   }
 
   /** Visual-only delete: hides a task from the widget. Does NOT modify trekker DB. */
@@ -175,14 +183,18 @@ export class TrekkerStore {
       priority?: TaskPriority;
       status?: TaskStatus;
       tags?: string;
+      epicId?: string;
+      removeEpic?: boolean;
     },
   ): Promise<Task> {
     const cliOpts: UpdateTaskOpts = {
       title: opts.content,
       description: opts.description,
       priority: opts.priority ? unmapPriority(opts.priority) : undefined,
-      status: opts.status ? unmapStatus(opts.status) : undefined,
+      status: opts.status,
       tags: opts.tags,
+      epicId: opts.epicId,
+      removeEpic: opts.removeEpic,
     };
     const updated = await cliUpdateTask(id, cliOpts);
     await this.refresh();
@@ -207,14 +219,28 @@ export class TrekkerStore {
     return (await cliListComments(taskId)).map(fromCliComment);
   }
 
+  async updateComment(
+    commentId: string,
+    content: string,
+  ): Promise<ReturnType<typeof fromCliComment>> {
+    return fromCliComment(await cliUpdateComment(commentId, content));
+  }
+
+  async deleteComment(commentId: string): Promise<ReturnType<typeof fromCliComment>> {
+    return fromCliComment(await cliDeleteComment(commentId));
+  }
+
   async deleteTask(id: string): Promise<Task> {
     const deleted = await cliDeleteTask(id);
     await this.refresh();
     return fromCliTask(deleted);
   }
 
-  async search(query: string): Promise<SearchResult[]> {
-    return searchTrekker(query);
+  async search(
+    query: string,
+    type?: 'epic' | 'task' | 'subtask' | 'comment',
+  ): Promise<SearchResult[]> {
+    return searchTrekker(query, type);
   }
 
   async getFromCli(id: string): Promise<Task> {
@@ -224,6 +250,35 @@ export class TrekkerStore {
 
   async listSubtasks(parentTaskId: string): Promise<Task[]> {
     return (await cliListSubtasks(parentTaskId)).map(fromCliTask);
+  }
+
+  async updateSubtask(
+    id: string,
+    opts: {
+      content?: string;
+      description?: string;
+      priority?: TaskPriority;
+      status?: TaskStatus;
+    },
+  ): Promise<Task> {
+    const updated = await cliUpdateSubtask(id, {
+      title: opts.content,
+      description: opts.description,
+      priority: opts.priority ? unmapPriority(opts.priority) : undefined,
+      status: opts.status,
+    });
+    await this.refresh();
+    return fromCliTask(updated);
+  }
+
+  async deleteSubtask(id: string): Promise<Task> {
+    const deleted = await cliDeleteSubtask(id);
+    await this.refresh();
+    return fromCliTask(deleted);
+  }
+
+  async ready(): Promise<Task[]> {
+    return (await cliReadyTasks()).map(fromCliTask);
   }
 
   // ── Epic operations ──────────────────────────────────────────────────────────
@@ -243,9 +298,12 @@ export class TrekkerStore {
   }
 
   async listEpics(status?: EpicStatus): Promise<Epic[]> {
-    const cliStatus = status ? unmapEpicStatus(status) : undefined;
-    const epics = await cliListEpics(cliStatus ? { status: cliStatus } : undefined);
+    const epics = await cliListEpics(status ? { status } : undefined);
     return epics.map(fromCliEpic);
+  }
+
+  async getEpic(id: string): Promise<Epic> {
+    return fromCliEpic(await cliGetEpic(id));
   }
 
   async updateEpic(
@@ -261,10 +319,14 @@ export class TrekkerStore {
       title: opts.title,
       description: opts.description,
       priority: opts.priority ? unmapPriority(opts.priority) : undefined,
-      status: opts.status ? unmapEpicStatus(opts.status) : undefined,
+      status: opts.status,
     };
     const updated = await cliUpdateEpic(id, cliOpts);
     return fromCliEpic(updated);
+  }
+
+  async deleteEpic(id: string): Promise<Epic> {
+    return fromCliEpic(await cliDeleteEpic(id));
   }
 
   // ── Dependency operations ────────────────────────────────────────────────────
@@ -275,5 +337,26 @@ export class TrekkerStore {
 
   async removeDep(taskId: string, dependsOnId: string): Promise<void> {
     await trekkerCmd('dep', 'remove', taskId, dependsOnId);
+  }
+
+  async listDeps(taskId: string): Promise<Dependency[]> {
+    const out = await trekkerCmd('dep', 'list', taskId);
+    return (out.rows ?? []).map((row) => ({
+      taskId: row['taskId'] ?? taskId,
+      dependsOnTaskId: row['dependsOnTaskId'] ?? row['dependsOnId'] ?? '',
+      createdAt: row['createdAt'] ?? '',
+    }));
+  }
+
+  history(filters?: HistoryFilters): Promise<string> {
+    return cliHistory(filters);
+  }
+
+  quickstart(): Promise<string> {
+    return cliQuickstart();
+  }
+
+  init(): Promise<string> {
+    return cliInitTrekker();
   }
 }

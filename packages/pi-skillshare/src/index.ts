@@ -321,7 +321,7 @@ export default function (pi: ExtensionAPI) {
         const { syncSkills } = await import('./utils');
         const output = syncSkills(projectMode);
         ctx.ui.setStatus('skillshare', '');
-        ctx.ui.notify('Sync completed', 'success');
+        ctx.ui.notify('Sync completed', 'info');
         console.log(`skillshare sync:\n${output}`);
       } catch (err: unknown) {
         ctx.ui.setStatus('skillshare', '');
@@ -370,7 +370,7 @@ export default function (pi: ExtensionAPI) {
         if (checkResult.skills.length === 0 && checkResult.tracked_repos.length === 0) {
           ctx.ui.notify('No skills installed — nothing to check', 'info');
         } else {
-          ctx.ui.notify(`All ${upToDateCount} skills are up to date`, 'success');
+          ctx.ui.notify(`All ${upToDateCount} skills are up to date`, 'info');
         }
         return;
       }
@@ -405,7 +405,7 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(`Changes detected:${summary}`, 'info');
 
       // Step 2: Ask for confirmation
-      const confirmed = await ctx.ui.confirm('Apply all updates now?', 'Yes', 'No');
+      const confirmed = await ctx.ui.confirm('Confirm Update', 'Apply all updates now?');
 
       if (!confirmed) {
         ctx.ui.notify('Update cancelled', 'info');
@@ -419,7 +419,7 @@ export default function (pi: ExtensionAPI) {
         const { updateSkills } = await import('./utils');
         const output = updateSkills(projectMode);
         ctx.ui.setStatus('skillshare', '');
-        ctx.ui.notify('Update completed', 'success');
+        ctx.ui.notify('Update completed', 'info');
         console.log(`skillshare update:\n${output}`);
       } catch (err: unknown) {
         ctx.ui.setStatus('skillshare', '');
@@ -450,7 +450,7 @@ export default function (pi: ExtensionAPI) {
         const { openUI } = await import('./utils');
         const { url } = openUI(process.cwd());
         ctx.ui.setStatus('skillshare', '');
-        ctx.ui.notify('Skillshare web UI starting at ' + url, 'success');
+        ctx.ui.notify('Skillshare web UI starting at ' + url, 'info');
       } catch (err: unknown) {
         ctx.ui.setStatus('skillshare', '');
         ctx.ui.notify(
@@ -529,7 +529,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (seen.size === 0) {
-        ctx.ui.notify('No lint issues found', 'success');
+        ctx.ui.notify('No lint issues found', 'info');
         return;
       }
 

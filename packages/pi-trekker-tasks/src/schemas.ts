@@ -6,6 +6,9 @@ function StringEnum<T extends string>(values: readonly T[], opts?: object) {
   return Type.Unsafe<T>({ type: 'string', enum: values, ...opts });
 }
 
+const TaskStatusValues = ['todo', 'in_progress', 'completed', 'wont_fix', 'archived'] as const;
+const EpicStatusValues = ['todo', 'in_progress', 'completed', 'archived'] as const;
+
 // ── TaskCreate ─────────────────────────────────────────────────────────────────
 
 export const TaskCreateParams = Type.Object({
@@ -42,11 +45,13 @@ export const TaskGetParams = Type.Object({
 
 export const TaskListParams = Type.Object({
   status: Type.Optional(
-    StringEnum(['pending', 'in_progress', 'completed', 'failed', 'deleted'] as const, {
+    StringEnum(TaskStatusValues, {
       description: 'Filter by status. Omit to list all tasks.',
     }),
   ),
   epicId: Type.Optional(Type.String({ description: 'Filter by epic ID (e.g. EPIC-1).' })),
+  limit: Type.Optional(Type.Number({ description: 'Maximum results to return.' })),
+  page: Type.Optional(Type.Number({ description: 'Result page number.' })),
 });
 
 // ── TaskUpdate ─────────────────────────────────────────────────────────────────
@@ -54,11 +59,10 @@ export const TaskListParams = Type.Object({
 export const TaskUpdateParams = Type.Object({
   id: Type.String({ description: 'The task ID to update (e.g. TREK-1).' }),
   status: Type.Optional(
-    Type.Unsafe<'pending' | 'in_progress' | 'completed' | 'failed' | 'deleted'>({
+    Type.Unsafe<'todo' | 'in_progress' | 'completed' | 'wont_fix' | 'archived'>({
       type: 'string',
-      enum: ['pending', 'in_progress', 'completed', 'failed', 'deleted'],
-      description:
-        "New status. 'deleted' archives the task in trekker. 'failed' marks it wont_fix.",
+      enum: TaskStatusValues,
+      description: "New Trekker-native status. 'archived' removes the task from active views.",
     }),
   ),
   content: Type.Optional(Type.String({ description: 'New task title.' })),
@@ -70,6 +74,10 @@ export const TaskUpdateParams = Type.Object({
   ),
   tags: Type.Optional(
     Type.String({ description: 'New tags (comma-separated). Replaces existing tags.' }),
+  ),
+  epicId: Type.Optional(Type.String({ description: 'New epic ID to assign (e.g. EPIC-1).' })),
+  removeEpic: Type.Optional(
+    Type.Boolean({ description: 'Remove the task from its current epic.' }),
   ),
 });
 
@@ -110,6 +118,36 @@ export const TaskSearchParams = Type.Object({
   query: Type.String({
     description: 'Full-text search query across task titles, descriptions, and comments.',
   }),
+  type: Type.Optional(
+    StringEnum(['epic', 'task', 'subtask', 'comment'] as const, {
+      description: 'Optional entity type filter.',
+    }),
+  ),
+});
+
+// ── TaskReady ─────────────────────────────────────────────────────────────────
+
+export const TaskReadyParams = Type.Object({
+  limit: Type.Optional(Type.Number({ description: 'Maximum ready tasks to return.' })),
+});
+
+// ── TaskHistory ────────────────────────────────────────────────────────────────
+
+export const TaskHistoryParams = Type.Object({
+  limit: Type.Optional(Type.Number({ description: 'Maximum history events to return.' })),
+  entity: Type.Optional(Type.String({ description: 'Entity ID to inspect (e.g. TREK-1).' })),
+  type: Type.Optional(Type.String({ description: 'Entity type filter (task, epic, comment).' })),
+  action: Type.Optional(Type.String({ description: 'Action filter (create, update, delete).' })),
+  since: Type.Optional(Type.String({ description: 'Timestamp/date filter supported by trekker.' })),
+});
+
+// ── TaskComplete ───────────────────────────────────────────────────────────────
+
+export const TaskCompleteParams = Type.Object({
+  id: Type.String({ description: 'Task ID to complete (e.g. TREK-1).' }),
+  summary: Type.String({
+    description: 'Completion summary. Include files changed and important behavior changes.',
+  }),
 });
 
 // ── EpicCreate ─────────────────────────────────────────────────────────────────
@@ -130,10 +168,18 @@ export const EpicCreateParams = Type.Object({
 
 export const EpicListParams = Type.Object({
   status: Type.Optional(
-    StringEnum(['pending', 'in_progress', 'completed', 'deleted'] as const, {
+    StringEnum(EpicStatusValues, {
       description: 'Filter by status. Omit to list all epics.',
     }),
   ),
+  limit: Type.Optional(Type.Number({ description: 'Maximum results to return.' })),
+  page: Type.Optional(Type.Number({ description: 'Result page number.' })),
+});
+
+// ── EpicGet ───────────────────────────────────────────────────────────────────
+
+export const EpicGetParams = Type.Object({
+  id: Type.String({ description: 'The epic ID to retrieve (e.g. EPIC-1).' }),
 });
 
 // ── EpicUpdate ─────────────────────────────────────────────────────────────────
@@ -148,12 +194,18 @@ export const EpicUpdateParams = Type.Object({
     }),
   ),
   status: Type.Optional(
-    Type.Unsafe<'pending' | 'in_progress' | 'completed' | 'deleted'>({
+    Type.Unsafe<'todo' | 'in_progress' | 'completed' | 'archived'>({
       type: 'string',
-      enum: ['pending', 'in_progress', 'completed', 'deleted'],
-      description: "'deleted' archives the epic in trekker.",
+      enum: EpicStatusValues,
+      description: "'archived' removes the epic from active views.",
     }),
   ),
+});
+
+// ── EpicDelete ────────────────────────────────────────────────────────────────
+
+export const EpicDeleteParams = Type.Object({
+  id: Type.String({ description: 'The epic ID to archive/delete (e.g. EPIC-1).' }),
 });
 
 // ── DepAdd ─────────────────────────────────────────────────────────────────────
@@ -173,3 +225,36 @@ export const DepRemoveParams = Type.Object({
   taskId: Type.String({ description: 'The dependent task ID.' }),
   dependsOnId: Type.String({ description: 'The prerequisite task ID to remove.' }),
 });
+
+// ── DepList ───────────────────────────────────────────────────────────────────
+
+export const DepListParams = Type.Object({
+  taskId: Type.String({ description: 'Task ID whose dependencies should be listed.' }),
+});
+
+// ── CommentUpdate/Delete ──────────────────────────────────────────────────────
+
+export const CommentUpdateParams = Type.Object({
+  commentId: Type.String({ description: 'Comment ID to update.' }),
+  content: Type.String({ description: 'Replacement comment text.' }),
+});
+
+export const CommentDeleteParams = Type.Object({
+  commentId: Type.String({ description: 'Comment ID to delete.' }),
+});
+
+// ── SubtaskUpdate/Delete ──────────────────────────────────────────────────────
+
+export const SubtaskUpdateParams = Type.Omit(TaskUpdateParams, ['epicId', 'removeEpic']);
+
+export const SubtaskDeleteParams = Type.Object({
+  id: Type.String({ description: 'The subtask ID to archive/delete.' }),
+});
+
+// ── System Tools ──────────────────────────────────────────────────────────────
+
+export const TrekkerInitParams = Type.Object({
+  confirm: Type.Boolean({ description: 'Must be true to initialize trekker in this project.' }),
+});
+
+export const TrekkerQuickstartParams = Type.Object({});

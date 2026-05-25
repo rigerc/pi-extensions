@@ -13,7 +13,8 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, watch } from "node:fs";
+import type { FSWatcher } from "node:fs";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -394,6 +395,8 @@ export default function (pi: ExtensionAPI) {
 
   let sessionTasks: TrekTaskRow[] = [];
   let sessionRootId: string | null = null;
+  let dbWatcher: FSWatcher | null = null;
+  let dbDebounce: ReturnType<typeof setTimeout> | null = null;
 
   const TASK_BOX: Record<string, string> = {
     completed:   "[x]",
@@ -427,6 +430,20 @@ export default function (pi: ExtensionAPI) {
     } else {
       renderSessionWidget();
     }
+  }
+
+  function startDbWatcher(): void {
+    const dbPath = join(cwd, ".trekker", "trekker.db");
+    if (!existsSync(dbPath) || dbWatcher) return;
+    dbWatcher = watch(dbPath, () => {
+      if (dbDebounce) clearTimeout(dbDebounce);
+      dbDebounce = setTimeout(() => void refreshSessionWidget(), 150);
+    });
+  }
+
+  function stopDbWatcher(): void {
+    if (dbDebounce) { clearTimeout(dbDebounce); dbDebounce = null; }
+    if (dbWatcher) { dbWatcher.close(); dbWatcher = null; }
   }
 
   async function fetchTrekTasks(status: string): Promise<TrekTaskRow[]> {
@@ -504,6 +521,7 @@ export default function (pi: ExtensionAPI) {
     if (hasDb) {
       enabled = true;
       uiCtx = ctx.ui;
+      startDbWatcher();
       return;
     }
 
@@ -542,6 +560,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify("Trekker initialized.", "info");
           enabled = true;
           uiCtx = ctx.ui;
+          startDbWatcher();
 
 
         } catch (err: unknown) {
@@ -564,6 +583,11 @@ export default function (pi: ExtensionAPI) {
       );
       enabled = false;
     }
+  });
+
+  // ── session_shutdown — clean up db watcher ────────────────────────
+  pi.on("session_shutdown", () => {
+    stopDbWatcher();
   });
 
   // ── before_agent_start — inject trekker reference into system prompt ─
@@ -599,6 +623,7 @@ export default function (pi: ExtensionAPI) {
 
     const taskId = parseTrekkerStarted(cmd);
     if (!taskId) return;
+    if (!/^EPIC-/i.test(taskId)) return;
 
     // Check for uncommitted changes
     try {
@@ -639,13 +664,6 @@ export default function (pi: ExtensionAPI) {
         commentedThisTurn.add(commentTarget);
         return;
       }
-    }
-
-    // ── Re-fetch session widget on any status change ────────────
-    // Run even if the overall bash exit was non-zero: trekker may have
-    // succeeded as part of a compound command (e.g. trekker ... && git ...).
-    if (parseTrekkerStatusUpdate(cmd)) {
-      await refreshSessionWidget();
     }
 
     // ── Detect completions for commit prompt (only on success) ──

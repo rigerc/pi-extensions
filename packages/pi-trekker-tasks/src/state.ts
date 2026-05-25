@@ -91,7 +91,7 @@ export class TrekkerWidget {
       icon = theme.fg('success', '✔');
     } else if (task.status === 'in_progress') {
       icon = theme.fg('accent', '◼');
-    } else if (task.status === 'failed') {
+    } else if (task.status === 'wont_fix') {
       icon = theme.fg('error', '✗');
     } else {
       icon = '◻';
@@ -107,7 +107,7 @@ export class TrekkerWidget {
       text = `${pad}${icon} ${theme.fg('accent', `${task.content}…`)} ${stats}${epicTag}`;
     } else if (task.status === 'completed') {
       text = `${pad}${icon} ${theme.fg('dim', theme.strikethrough(task.content))}${epicTag}`;
-    } else if (task.status === 'failed') {
+    } else if (task.status === 'wont_fix') {
       text = `${pad}${icon} ${theme.fg('error', task.content)}${epicTag}`;
     } else {
       text = `${pad}${icon} ${task.content}${epicTag}`;
@@ -124,21 +124,21 @@ export class TrekkerWidget {
 
     const completed = tasks.filter((t) => t.status === 'completed');
     const inProgress = tasks.filter((t) => t.status === 'in_progress');
-    const failed = tasks.filter((t) => t.status === 'failed');
-    const pending = tasks.filter((t) => t.status === 'pending');
+    const wontFix = tasks.filter((t) => t.status === 'wont_fix');
+    const todo = tasks.filter((t) => t.status === 'todo');
 
     const parts: string[] = [];
     if (completed.length > 0) parts.push(`${completed.length} done`);
     if (inProgress.length > 0) parts.push(`${inProgress.length} in progress`);
-    if (failed.length > 0) parts.push(theme.fg('error', `${failed.length} failed`));
-    if (pending.length > 0) parts.push(`${pending.length} open`);
+    if (wontFix.length > 0) parts.push(theme.fg('error', `${wontFix.length} wont_fix`));
+    if (todo.length > 0) parts.push(`${todo.length} todo`);
     const statusText = `${tasks.length} task${tasks.length !== 1 ? 's' : ''} (${parts.join(', ')})`;
 
     // Build epic summary: total epics + active count
     let epicSummary = '';
     if (this.epics.length) {
       const activeEpics = this.epics.filter(
-        (e) => e.status === 'in_progress' || e.status === 'pending',
+        (e) => e.status === 'in_progress' || e.status === 'todo',
       );
       const epicLabel =
         activeEpics.length > 0
@@ -298,7 +298,7 @@ function renderTaskLine(task: Task, theme: any, includeSubtaskIndent = true): st
       ? theme.fg('success', '✓')
       : task.status === 'in_progress'
         ? theme.fg('accent', '●')
-        : task.status === 'failed'
+        : task.status === 'wont_fix'
           ? theme.fg('error', '✗')
           : theme.fg('dim', '○');
   const pColor = priorityColor(task.priority);
@@ -309,7 +309,7 @@ function renderTaskLine(task: Task, theme: any, includeSubtaskIndent = true): st
       ? theme.fg('dim', theme.strikethrough(task.content))
       : task.status === 'in_progress'
         ? theme.fg('text', theme.bold(task.content))
-        : task.status === 'failed'
+        : task.status === 'wont_fix'
           ? theme.fg('error', task.content)
           : theme.fg('muted', task.content);
   return `${subtaskIndent}${icon} ${pLabel}  ${content}`;
@@ -327,12 +327,12 @@ export function renderTaskListResult(
 
   const doneCount = tasks.filter((t) => t.status === 'completed').length;
   const inProgCount = tasks.filter((t) => t.status === 'in_progress').length;
-  const failedCount = tasks.filter((t) => t.status === 'failed').length;
+  const wontFixCount = tasks.filter((t) => t.status === 'wont_fix').length;
   const total = tasks.length;
 
   const parts: string[] = [];
   if (inProgCount > 0) parts.push(theme.fg('accent', `● ${inProgCount} active`));
-  if (failedCount > 0) parts.push(theme.fg('error', `✗ ${failedCount} failed`));
+  if (wontFixCount > 0) parts.push(theme.fg('error', `✗ ${wontFixCount} wont_fix`));
   parts.push(theme.fg('success', `✓ ${doneCount}/${total} done`));
   let output = parts.join('  ');
 
@@ -351,14 +351,14 @@ export function renderTaskListResult(
       }
     }
 
-    // Build ordered epic list: active/in-progress epics first, then pending, then completed, then unassigned
+    // Build ordered epic list: active/in-progress epics first, then todo, then completed, then unassigned
     const epicOrder: Epic[] = [...epics].sort((a, b) => {
       const statusOrder: Record<string, number> = {
         in_progress: 0,
-        pending: 1,
+        todo: 1,
         completed: 2,
-        failed: 3,
-        deleted: 4,
+        wont_fix: 3,
+        archived: 4,
       };
       return (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
     });

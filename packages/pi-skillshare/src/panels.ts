@@ -115,7 +115,7 @@ export class TabBar {
 // ---------------------------------------------------------------------------
 
 export interface SearchPanelCallbacks {
-  onNotify: (msg: string, type: 'info' | 'success' | 'error') => void;
+  onNotify: (msg: string, type: 'info' | 'warning' | 'error') => void;
   onSetStatus: (msg: string) => void;
   onClearStatus: () => void;
   onClose: () => void;
@@ -304,7 +304,7 @@ export class SearchPanel {
 
     // Report
     if (installed.length > 0) {
-      this.callbacks.onNotify(`✓ Installed: ${installed.join(', ')}`, 'success');
+      this.callbacks.onNotify(`✓ Installed: ${installed.join(', ')}`, 'info');
       this.callbacks.onNotify('Run sync from the Status panel to distribute', 'info');
     }
     if (failed.length > 0) {
@@ -513,7 +513,7 @@ export class InstalledPanel {
       void this.doUninstall();
       return;
     }
-    if (matchesKey(data, 'U')) {
+    if (matchesKey(data, 'shift+u')) {
       void this.doUpdate();
       return;
     }
@@ -568,7 +568,7 @@ export class InstalledPanel {
     this.callbacks.onClearStatus();
 
     if (uninstalled.length > 0) {
-      this.callbacks.onNotify(`✓ Uninstalled: ${uninstalled.join(', ')}`, 'success');
+      this.callbacks.onNotify(`✓ Uninstalled: ${uninstalled.join(', ')}`, 'info');
     }
     if (failed.length > 0) {
       this.callbacks.onNotify(
@@ -590,7 +590,7 @@ export class InstalledPanel {
 
     try {
       const output = updateSkills(this.config.installMode === 'project');
-      this.callbacks.onNotify('All skills updated', 'success');
+      this.callbacks.onNotify('All skills updated', 'info');
       console.log(`skillshare update:\n${output}`);
     } catch (err: unknown) {
       this.callbacks.onNotify(
@@ -739,7 +739,7 @@ export class StatusPanel {
           output = runDoctor();
           break;
       }
-      this.callbacks.onNotify(`${action} completed`, 'success');
+      this.callbacks.onNotify(`${action} completed`, 'info');
       console.log(`skillshare ${action}:\n${output}`);
     } catch (err: unknown) {
       this.callbacks.onNotify(
@@ -811,7 +811,7 @@ export class StatusPanel {
 
 export interface SettingsCallbacks {
   onConfigChange: (config: SkillshareConfig) => void;
-  onNotify: (msg: string, type: 'info' | 'success' | 'error') => void;
+  onNotify: (msg: string, type: 'info' | 'warning' | 'error') => void;
   onRequestRender: () => void;
 }
 
@@ -824,7 +824,7 @@ export class SettingsPanel {
   private cachedLines?: string[];
 
   // Setting options
-  private settings: Array<{
+  private settings!: Array<{
     id: string;
     label: string;
     detail: string;
