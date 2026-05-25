@@ -1,0 +1,19 @@
+{
+  "name": "@counterposition/pi-trek-commit",
+  "version": "0.1.0",
+  "description": "Detects trekker -s completed commands and prompts the agent to git commit using Conventional Commits",
+  "license": "MIT",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "files": ["src/", "README.md"],
+  "pi": {
+    "extensions": ["./src"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typescript": "^5.9.3"
+  }
+}

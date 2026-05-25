@@ -1,0 +1,21 @@
+{
+  "name": "pi-trek",
+  "version": "1.0.0",
+  "description": "Trekker task management hooks, context, and tools for Pi agents",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "files": ["src/", "skills/", "prompts/", "README.md"],
+  "pi": {
+    "extensions": ["./src"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typescript": "^5.9.3"
+  }
+}
