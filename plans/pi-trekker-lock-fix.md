@@ -15,6 +15,7 @@ Add an **in-process async mutex** to `cli.ts` that serializes all `trekkerCmdRaw
 ### Why in-process mutex instead of PATH wrapper?
 
 The existing plan (`docs/plans/pi-trek-lock.md`) proposes a PATH wrapper with `flock`. That's more comprehensive (covers bash subshells) but is a larger change. For `pi-trekker-tasks`, the mutex + retry approach:
+
 - Solves the immediate problem (concurrent tool calls in a single turn)
 - Catches bash-invoked lock errors via retry
 - Zero new dependencies
@@ -25,6 +26,7 @@ The existing plan (`docs/plans/pi-trek-lock.md`) proposes a PATH wrapper with `f
 ### `pi-trekker-tasks/src/cli.ts`
 
 Changes:
+
 1. **Add async mutex** — a simple `Promise`-based queue that ensures only one `trekker` invocation runs at a time
 2. **Add lock error detection** — helper to detect `SQLITE_BUSY` / `database is locked` in stderr
 3. **Add retry wrapper** — retries failed calls up to 3 times with exponential backoff (50ms, 100ms, 200ms)
@@ -40,7 +42,10 @@ class AsyncMutex {
 
   async acquire<T>(fn: () => Promise<T>): Promise<T> {
     const result = this.queue.then(fn);
-    this.queue = result.then(() => {}, () => {}); // always resolve
+    this.queue = result.then(
+      () => {},
+      () => {},
+    ); // always resolve
     return result;
   }
 }
@@ -54,7 +59,7 @@ function isSqliteLockError(err: Error, stderr?: string): boolean {
   return (
     combined.includes('database is locked') ||
     combined.includes('sqlite_busy') ||
-    combined.includes('sql logic error') && combined.includes('locked')
+    (combined.includes('sql logic error') && combined.includes('locked'))
   );
 }
 ```
@@ -89,9 +94,14 @@ async function trekkerCmdRaw(...args: string[]): Promise<ToonOutput> {
   return mutex.acquire(async () => {
     return retryWithBackoff(async () => {
       return new Promise((resolve, reject) => {
-        execFile('trekker', allArgs, { encoding: 'utf-8', timeout: 30_000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-          // ... existing logic
-        });
+        execFile(
+          'trekker',
+          allArgs,
+          { encoding: 'utf-8', timeout: 30_000, maxBuffer: 10 * 1024 * 1024 },
+          (err, stdout, stderr) => {
+            // ... existing logic
+          },
+        );
       });
     });
   });

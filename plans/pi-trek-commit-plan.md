@@ -8,12 +8,12 @@ message instructing the agent to `git commit` the completed work.
 
 ## Decisions (from user choices)
 
-| Decision | Choice |
-|----------|--------|
-| Package scope | Standalone (no pi-trek dependency) |
-| Commit behavior | Inject a user message (not auto-commit) |
+| Decision        | Choice                                     |
+| --------------- | ------------------------------------------ |
+| Package scope   | Standalone (no pi-trek dependency)         |
+| Commit behavior | Inject a user message (not auto-commit)    |
 | Detection scope | `-s completed` only (not `-s in_progress`) |
-| Surface | Extension only (no skill) |
+| Surface         | Extension only (no skill)                  |
 
 ## Package Shape
 
@@ -69,14 +69,14 @@ pi-trek-commit/
 // Parse trekker CLI command like:
 //   trekker task update TREK-1 -s completed
 //   trekker subtask update TREK-1-SUB-1 -s completed
-const cmd = (event.input as any)?.command ?? "";
+const cmd = (event.input as any)?.command ?? '';
 const trimmed = cmd.trim();
-if (!trimmed.startsWith("trekker")) return;
-if (!trimmed.includes("-s completed")) return;
+if (!trimmed.startsWith('trekker')) return;
+if (!trimmed.includes('-s completed')) return;
 
 // Extract ID: match TREK-* or EPIC-* patterns
 const idMatch = trimmed.match(/(TREK-\d+|EPIC-\d+)/i);
-const taskId = idMatch ? idMatch[1].toUpperCase() : "unknown";
+const taskId = idMatch ? idMatch[1].toUpperCase() : 'unknown';
 ```
 
 ### Injected message format
@@ -98,6 +98,7 @@ expected to pick the appropriate type (`feat`, `fix`, `chore`, `docs`, `refactor
 ## Validation Plan (from pi-package-creator skill)
 
 ### Preflight
+
 ```bash
 python3 - "<package-path>/package.json" <<'PY'
 # manifest preflight (see references/validation.md)
@@ -105,18 +106,21 @@ PY
 ```
 
 ### Install into temp agent dir
+
 ```bash
 PI_CODING_AGENT_DIR="$TMP_PI_DIR" pi install ./pi-trek-commit
 PI_CODING_AGENT_DIR="$TMP_PI_DIR" pi list | grep pi-trek-commit
 ```
 
 ### Smoke test
+
 ```bash
 # Start a pi session with the extension and verify it loads
 PI_CODING_AGENT_DIR="$TMP_PI_DIR" pi -p "/help" >"$ARTIFACT_DIR/smoke.log"
 ```
 
 ### Mutation test (scratch repo)
+
 ```bash
 SCRATCH_REPO=$(mktemp -d) && git init "$SCRATCH_REPO"
 cd "$SCRATCH_REPO"

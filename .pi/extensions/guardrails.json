@@ -3,7 +3,13 @@
   "pathAccess": {
     "allowedPaths": [
       "/dev/",
-      "/home/"
+      "/home/",
+      "/mnt/extra-ssd/dev/projects/",
+      "/",
+      "/tmp/pi-powerbar-repo/src/powerbar-provider/",
+      "/tmp/pi-powerbar-repo/src/powerbar-model/",
+      "/tmp/pi-powerbar-repo/src/powerbar/",
+      "/tmp/pi-powerbar-repo/"
     ]
   },
   "version": "0.9.0-20260327"

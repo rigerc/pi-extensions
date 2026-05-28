@@ -2,12 +2,21 @@
   "name": "@rigerc/pi-skillshare",
   "version": "0.1.5",
   "description": "Search, install, and manage skillshare AI agent skills from within Pi",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
   "type": "module",
-  "files": ["src/", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "publishConfig": {
     "access": "public"

@@ -2,12 +2,23 @@
   "name": "@rigerc/pi-model-picker",
   "version": "0.1.0",
   "description": "Categorized, keyboard-driven model selector for the Pi coding agent",
-  "keywords": ["pi-package", "pi-extension", "model-picker"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "model-picker"
+  ],
   "license": "MIT",
   "type": "module",
-  "files": ["src/", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "publishConfig": {
     "access": "public"

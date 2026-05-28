@@ -38,3 +38,8 @@ CLAUDE.md
 # todos
 ./.todos/
 copier/
+.projscan-cache/
+.projscan-plugins/
+.tick/
+.trekker/
+.jobs.db

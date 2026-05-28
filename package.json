@@ -1,8 +1,10 @@
 {
   "private": true,
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "check": "tsc -b packages/pi-trekker-tasks packages/pi-skillshare",
+    "check": "tsc -b packages/pi-skillshare packages/pi-model-picker",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
