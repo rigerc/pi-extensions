@@ -703,7 +703,7 @@ export class SystemOneClient {
         defaultHeaders:
           config.provider === 'openrouter'
             ? {
-                'HTTP-Referer': 'https://github.com/rigerc/pi-system-one',
+                'HTTP-Referer': 'https://github.com/rigerc/pi-extensions',
                 'X-OpenRouter-Title': 'pi-system-one',
               }
             : undefined,

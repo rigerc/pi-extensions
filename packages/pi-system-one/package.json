@@ -67,12 +67,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rigerc/pi-system-one.git"
+    "url": "git+https://github.com/rigerc/pi-extensions.git",
+    "directory": "packages/pi-system-one"
   },
   "bugs": {
-    "url": "https://github.com/rigerc/pi-system-one/issues"
+    "url": "https://github.com/rigerc/pi-extensions/issues"
   },
-  "homepage": "https://github.com/rigerc/pi-system-one#readme",
+  "homepage": "https://github.com/rigerc/pi-extensions/tree/master/packages/pi-system-one#readme",
   "author": "Theophilo Damiao",
   "contributors": [
     "rigerc"

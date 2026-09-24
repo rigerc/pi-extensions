@@ -706,7 +706,7 @@ test('test_client_sends_string_state_unwrapped_and_labels_openrouter_requests', 
     assert.equal(stub.calls[0].request.state, 'plain state', 'string state passes through as-is');
     assert.equal(
       stub.calls[0].defaultHeaders?.['HTTP-Referer'],
-      'https://github.com/rigerc/pi-system-one',
+      'https://github.com/rigerc/pi-extensions',
     );
     assert.equal(stub.calls[0].defaultHeaders?.['X-OpenRouter-Title'], 'pi-system-one');
   } finally {

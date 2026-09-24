@@ -35,11 +35,7 @@ Provider-agnostic semantic routing and typed System One decisions for the [Pi co
 pi install npm:@rigerc/pi-system-one
 ```
 
-Or install directly from GitHub:
-
-```bash
-pi install git:github.com/rigerc/pi-system-one
-```
+Source: [pi-extensions/packages/pi-system-one](https://github.com/rigerc/pi-extensions/tree/master/packages/pi-system-one).
 
 ## Setup
 
