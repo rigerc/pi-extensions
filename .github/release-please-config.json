@@ -4,7 +4,7 @@
   "linked-versions": true,
   "baseBranch": "master",
   "packages": {
-    "packages/pi-jev": {
+    "packages/pi-system-one": {
       "changelog-path": "CHANGELOG.md"
     }
   },

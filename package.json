@@ -4,10 +4,10 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "tsc -b packages/pi-jev",
-    "check:pi-jev": "npm --prefix packages/pi-jev run typecheck",
+    "check": "tsc -b packages/pi-system-one",
+    "check:pi-system-one": "npm --prefix packages/pi-system-one run typecheck",
     "test": "vitest run",
-    "test:pi-jev": "npm --prefix packages/pi-jev test",
+    "test:pi-system-one": "npm --prefix packages/pi-system-one test",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "prepublishOnly": "npm run check",

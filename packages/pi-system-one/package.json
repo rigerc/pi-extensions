@@ -1,0 +1,81 @@
+{
+  "name": "@rigerc/pi-system-one",
+  "version": "0.7.0",
+  "description": "Provider-agnostic semantic routing and typed System One decisions for Pi",
+  "type": "module",
+  "main": "extensions/index.ts",
+  "bin": {
+    "pi-system-one-gate": "./bin/system-one-gate.js",
+    "system-one-gate": "./bin/system-one-gate.js",
+    "pi-jev-gate": "./bin/system-one-gate.js",
+    "jev-gate": "./bin/system-one-gate.js"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "typesafe",
+    "openrouter",
+    "laya",
+    "local-ai",
+    "jev",
+    "system-one",
+    "tool-router"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "files": [
+    "bin",
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import tsx test/*.test.ts",
+    "smoke": "pi -ne -e ./extensions/index.ts -p --no-session \"list loaded tools\""
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0",
+    "tsx": "^4.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.85.0",
+    "@earendil-works/pi-coding-agent": "^0.85.0",
+    "@earendil-works/pi-tui": "^0.85.0",
+    "@types/node": "^22.0.0",
+    "@sinclair/typebox": "^0.34.28",
+    "typescript": "^5.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rigerc/pi-system-one.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rigerc/pi-system-one/issues"
+  },
+  "homepage": "https://github.com/rigerc/pi-system-one#readme",
+  "author": "Theophilo Damiao",
+  "contributors": [
+    "rigerc"
+  ],
+  "license": "MIT"
+}
