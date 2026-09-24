@@ -33,7 +33,7 @@ tasks:
     requires:
       vars: [APP]
     cmds:
-      - 'skillshare update -p && skillshare sync -p'
+      - ':'
   _global:post:
     internal: true
     requires:

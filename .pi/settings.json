@@ -1,50 +1,5 @@
 {
-  "packages": ["npm:@counterposition/skill-pi"],
-  "trekker": {
-    "enabled": true,
-    "requireProjectTrekker": true,
-    "agentName": "pi",
-    "sessionStart": {
-      "injectContext": true,
-      "includeCurrentTask": true,
-      "includeRecentHistory": true,
-      "includeReadyTasks": true,
-      "historyLimit": 10,
-      "readyLimit": 10,
-      "includeQuickstartHint": true
-    },
-    "workflow": {
-      "strictness": "prompt",
-      "oneInProgressTask": "prompt",
-      "requireSearchBeforeCreate": "prompt",
-      "requireSummaryBeforeDone": "prompt"
-    },
-    "checkpoint": {
-      "mode": "prompt",
-      "onCompact": true,
-      "onShutdown": false,
-      "onSessionSwitch": true,
-      "onFork": true
-    },
-    "planMode": {
-      "enabled": true,
-      "plansDir": "docs/plans",
-      "allowPlanWrites": true,
-      "blockImplementationWrites": true,
-      "blockRiskyShellWrites": true
-    },
-    "ui": {
-      "footerStatus": true,
-      "editorWidget": false,
-      "richFeedback": true,
-      "dashboardDetection": true,
-      "dashboardUrl": "http://localhost:3008",
-      "dashboardProbePorts": [3000, 5173, 4173]
-    },
-    "tools": {
-      "enabled": true,
-      "mutatingTools": true,
-      "readOnlyWhenPlanning": true
-    }
-  }
+  "packages": [
+    "npm:@counterposition/skill-pi"
+  ]
 }
