@@ -77,13 +77,14 @@ export function registerSystemOneCommands(
     const sub = (tokens[0] ?? '').toLowerCase();
     const rest = tokens.slice(1).join(' ');
     const usage =
-      'Available options: /system-one status, /system-one skills [query], /system-one test [prompt], /system-one enable, /system-one disable, /system-one auto [on|off], /system-one auto-tools [on|off], /system-one auto-skills [on|off], /system-one auto-model [on|off], /system-one compact [on|off], /system-one auto-agents [on|off], /system-one tool-guard [on|off], /system-one agents [task], /system-one-settings';
+      'Available options: /system-one status, /system-one health, /system-one skills [query], /system-one test [prompt], /system-one enable, /system-one disable, /system-one auto [on|off], /system-one auto-tools [on|off], /system-one auto-skills [on|off], /system-one auto-model [on|off], /system-one compact [on|off], /system-one auto-agents [on|off], /system-one tool-guard [on|off], /system-one agents [task], /system-one-settings';
 
     if (sub === 'status' || sub === '') {
-      const origin = systemOneClient.getKeyOrigin();
       const info = systemOneClient.getProviderInfo();
+      const origin = info?.keyOrigin;
       const configured = systemOneClient.isConfigured();
       const stats = systemOneClient.stats;
+      const health = info?.provider === 'laya' ? systemOneClient.getLayaHealthStatus?.() : null;
       const activeTools = pi.getActiveTools();
       const allTools = pi.getAllTools();
       const activeSet = new Set(activeTools);
@@ -93,7 +94,7 @@ export function registerSystemOneCommands(
 
       const lines = [
         `System One Status:`,
-        `• Configured: ${
+        `• Provider configured: ${
           configured
             ? origin
               ? `Yes (from ${origin})`
@@ -104,14 +105,24 @@ export function registerSystemOneCommands(
         }`,
         ...(info
           ? [
-              `• Provider: ${info.provider} (${info.baseURL})${layer('provider')}`,
-              `• Model: ${info.model}${layer('model')}`,
+              `• Selected provider: ${info.provider} (${info.baseURL})${layer('provider')}`,
+              `• Configured model: ${info.model}${layer('model')}`,
               `• Authentication: ${info.authMode === 'none' ? 'not required' : 'bearer'}`,
+            ]
+          : []),
+        ...(info?.provider === 'laya'
+          ? [
+              `• Laya health (last check): ${health?.result ? `healthy; ${health.result.loaded.length} model(s) loaded on ${health.result.device}` : health?.error ? `failed (${health.error})` : 'not checked; run /system-one health'}`,
             ]
           : []),
         `• Requests in session: ${stats.requestsCount}`,
         `• Total tokens used: ${stats.totalTokens}`,
-        ...(stats.totalCostUsd > 0 ? [`• Cost (session): $${stats.totalCostUsd.toFixed(6)}`] : []),
+        `• Cost (session): ${stats.totalCostUsd > 0 ? `$${stats.totalCostUsd.toFixed(6)}` : 'n/a'}`,
+        ...(stats.provider
+          ? [
+              `• Last response: ${stats.provider} / ${stats.model ?? '(unknown model)'}${stats.lastElapsedMs === undefined ? '' : ` (${stats.lastElapsedMs}ms)`}`,
+            ]
+          : []),
         ...(stats.truncations
           ? [
               `• Truncated state: ${stats.truncations} request(s), ${stats.truncatedChars ?? 0} chars${
@@ -120,7 +131,9 @@ export function registerSystemOneCommands(
             ]
           : []),
         ...(stats.fallback
-          ? [`• Fallback: ${stats.fallback.from} → ${stats.fallback.to} (${stats.fallback.reason})`]
+          ? [
+              `• Fallback (last request): ${stats.fallback.from} → ${stats.fallback.to} (${stats.fallback.reason})`,
+            ]
           : []),
         `• Auto tool routing: ${autoTools() ? 'on' : 'off'}${layer('autoToolRouting')}${autoTools() && !configured ? ' (inactive: System One unconfigured)' : ''}`,
         `• Auto skill routing: ${autoSkills() ? 'on' : 'off'}${layer('autoSkillRouting')}${autoSkills() && !configured ? ' (inactive: System One unconfigured)' : ''}`,
@@ -140,6 +153,22 @@ export function registerSystemOneCommands(
       ];
 
       ctx.ui.notify(lines.join('\n'), 'info');
+      return;
+    }
+
+    if (sub === 'health') {
+      try {
+        const result = await systemOneClient.checkLayaHealth();
+        ctx.ui.notify(
+          `Laya healthy: ${result.endpoint}\nLoaded models: ${result.loaded.length ? result.loaded.join(', ') : 'none (lazy loading)'}\nDevice: ${result.device}\nThis checks the server route; use /system-one test to verify inference.`,
+          'info',
+        );
+      } catch (error) {
+        ctx.ui.notify(
+          `Laya health check failed: ${(error as Error)?.message ?? String(error)}`,
+          'error',
+        );
+      }
       return;
     }
 
@@ -393,10 +422,6 @@ export function registerSystemOneCommands(
   pi.registerCommand('system-one', {
     description:
       'Manage System One integration (TypeSafe, OpenRouter, local Laya, or compatible models)',
-    handler,
-  });
-  pi.registerCommand('jev', {
-    description: 'Deprecated alias for /system-one (supported through 0.8)',
     handler,
   });
 }

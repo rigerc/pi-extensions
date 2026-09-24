@@ -237,6 +237,59 @@ export class TestConnectivitySubmenu {
   }
 }
 
+/** Read Laya's lightweight health route; this does not perform model inference. */
+export class LayaHealthSubmenu {
+  private lines: string[] = ['Checking Laya server…'];
+
+  constructor(
+    private systemOneClient: SystemOneClient,
+    private ui: SettingsUiTheme,
+    private done: SubmenuDone,
+    requestRender: () => void,
+  ) {
+    void this.run(requestRender);
+  }
+
+  private async run(requestRender: () => void): Promise<void> {
+    try {
+      const result = await this.systemOneClient.checkLayaHealth();
+      this.lines = [
+        this.ui.accent('Healthy.'),
+        `  endpoint: ${result.endpoint}`,
+        `  loaded:   ${result.loaded.length ? result.loaded.join(', ') : 'none (lazy loading)'}`,
+        `  device:   ${result.device}`,
+        '',
+        this.ui.dim('  Use Test connectivity to verify inference.'),
+      ];
+    } catch (error) {
+      const hint =
+        this.systemOneClient.getProviderInfo()?.provider === 'laya'
+          ? 'Check that laya-serve is running and the Base URL omits /v1.'
+          : 'Select Laya as the provider to use this action.';
+      this.lines = [
+        this.ui.accent('Failed.'),
+        `  ${(error as { message?: string } | undefined)?.message ?? String(error)}`,
+        '',
+        this.ui.dim(`  ${hint}`),
+      ];
+    }
+    requestRender();
+  }
+
+  handleInput(data: string): void {
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) this.done();
+  }
+
+  render(width: number): string[] {
+    return [
+      truncateToWidth(this.ui.bold('Actions · Check Laya health'), width),
+      ...this.lines.map((line) => truncateToWidth(line, width)),
+    ];
+  }
+
+  invalidate(): void {}
+}
+
 function maskedKey(provider: ReturnType<SystemOneClient['getProviderInfo']>): string {
   if (!provider) return '(unset)';
   if (provider.authMode === 'none') return 'not required (local endpoint)';
@@ -289,22 +342,24 @@ export function buildSettingItems(
     label: 'Provider · API key',
     description: 'Read-only. Keys are never written to config files or session entries.',
     currentValue: maskedKey(provider),
-    submenu: (_current, done) =>
-      new InfoSubmenu(
+    submenu: (_current, done) => {
+      const currentProvider = systemOneClient.getProviderInfo();
+      return new InfoSubmenu(
         ui.accent(ui.bold('Provider · API key')),
         [
-          `  provider:     ${provider?.provider ?? '(unconfigured)'}`,
-          `  base URL:     ${provider?.baseURL ?? '—'}`,
-          `  model:        ${provider?.model ?? '—'}`,
-          `  auth:         ${provider?.authMode === 'none' ? 'not required (local endpoint)' : 'bearer'}`,
-          `  key source:   ${provider?.keyOrigin ?? (provider?.authMode === 'none' ? 'not required' : '(unset)')}`,
+          `  provider:     ${currentProvider?.provider ?? '(unconfigured)'}`,
+          `  base URL:     ${currentProvider?.baseURL ?? '—'}`,
+          `  model:        ${currentProvider?.model ?? '—'}`,
+          `  auth:         ${currentProvider ? (currentProvider.authMode === 'none' ? 'not required (local endpoint)' : 'bearer') : '—'}`,
+          `  key source:   ${currentProvider?.keyOrigin ?? (currentProvider?.authMode === 'none' ? 'not required' : '(unset)')}`,
           '',
           ui.dim('  Set a key via TYPESAFE_API_KEY, OPENROUTER_API_KEY, or LAYA_API_KEY,'),
           ui.dim('  or a file in ~/.pi/agent/secrets/.'),
           ui.dim('  Keys are never persisted by this TUI.'),
         ],
         done,
-      ),
+      );
+    },
   });
 
   items.push({
@@ -312,29 +367,46 @@ export function buildSettingItems(
     label: 'Status · Session',
     description: 'Live counters and where each setting came from',
     currentValue: `${systemOneClient.stats.requestsCount} req`,
-    submenu: (_current, done) =>
-      new InfoSubmenu(
+    submenu: (_current, done) => {
+      const currentProvider = systemOneClient.getProviderInfo();
+      const currentHealth = systemOneClient.getLayaHealthStatus?.();
+      const currentResolved = settings.resolvedSettings;
+      return new InfoSubmenu(
         ui.accent(ui.bold('Status · Session')),
         [
           `  configured:  ${systemOneClient.isConfigured() ? 'yes' : 'no'}`,
-          `  provider:    ${provider?.provider ?? '—'}`,
-          `  model:       ${provider?.model ?? '—'}`,
+          `  provider:    ${currentProvider?.provider ?? '—'}`,
+          `  model:       ${currentProvider?.model ?? '—'}`,
           `  requests:    ${systemOneClient.stats.requestsCount}`,
           `  tokens:      ${systemOneClient.stats.totalTokens}`,
           `  cost:        ${systemOneClient.stats.totalCostUsd > 0 ? `$${systemOneClient.stats.totalCostUsd.toFixed(6)}` : 'n/a'}`,
-          `  fallback:    ${systemOneClient.stats.fallback ? `${systemOneClient.stats.fallback.from} → ${systemOneClient.stats.fallback.to}` : 'none'}`,
+          `  fallback (last request): ${systemOneClient.stats.fallback ? `${systemOneClient.stats.fallback.from} → ${systemOneClient.stats.fallback.to}` : 'none'}`,
+          ...(currentProvider?.provider === 'laya'
+            ? [
+                `  health (last check): ${currentHealth?.result ? 'healthy' : (currentHealth?.error ?? 'not checked')}`,
+              ]
+            : []),
           '',
           ui.dim('  Effective values (layer):'),
           ...SETTING_SPECS.map(
             (spec) =>
-              `    ${spec.label.padEnd(20).slice(0, 20)} ${formatSettingValue(resolved.values[spec.key])}  (${resolved.provenance[spec.key]})`,
+              `    ${spec.label.padEnd(20).slice(0, 20)} ${formatSettingValue(currentResolved.values[spec.key])}  (${currentResolved.provenance[spec.key]})`,
           ),
           '',
           ui.dim(`  user file:    ${paths.user}`),
           ui.dim(`  project file: ${paths.project}`),
         ],
         done,
-      ),
+      );
+    },
+  });
+
+  items.push({
+    id: 'action.layaHealth',
+    label: 'Actions · Check Laya health',
+    description: 'GET /health on the selected Laya endpoint; no inference request',
+    currentValue: 'run',
+    submenu: (_current, done) => new LayaHealthSubmenu(systemOneClient, ui, done, requestRender),
   });
 
   items.push({
@@ -440,7 +512,11 @@ export function registerSystemOneSettingsCommand(
         container.addChild(new DynamicBorder((s: string) => theme.fg('accent', s)));
 
         return {
-          render: (width: number) => container.render(width),
+          render: (width: number) => {
+            list.updateValue('status.apiKey', maskedKey(systemOneClient.getProviderInfo()));
+            list.updateValue('status.session', `${systemOneClient.stats.requestsCount} req`);
+            return container.render(width);
+          },
           invalidate: () => container.invalidate(),
           handleInput: (data: string) => {
             list.handleInput(data);
@@ -454,10 +530,6 @@ export function registerSystemOneSettingsCommand(
 
   pi.registerCommand('system-one-settings', {
     description: 'Open the interactive pi-system-one settings editor',
-    handler,
-  });
-  pi.registerCommand('jev-settings', {
-    description: 'Deprecated alias for /system-one-settings (supported through 0.8)',
     handler,
   });
 }

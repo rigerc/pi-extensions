@@ -77,14 +77,17 @@ function openSettings() {
     setProviderOverrides: (overrides: Record<string, unknown>) => {
       providerOverrides.push({ ...overrides });
     },
-    getProviderInfo: () => ({
-      provider: 'openrouter',
-      label: 'OpenRouter',
-      baseURL: 'https://openrouter.ai/api',
-      model: 'jev-latest',
-      keyOrigin: '$OPENROUTER_API_KEY',
-      authMode: 'bearer',
-    }),
+    getProviderInfo: () => {
+      const isLaya = providerOverrides.at(-1)?.provider === 'laya';
+      return {
+        provider: isLaya ? 'laya' : 'openrouter',
+        label: isLaya ? 'Laya (local)' : 'OpenRouter',
+        baseURL: isLaya ? 'http://127.0.0.1:8000' : 'https://openrouter.ai/api',
+        model: 'jev-latest',
+        keyOrigin: isLaya ? null : '$OPENROUTER_API_KEY',
+        authMode: isLaya ? 'none' : 'bearer',
+      };
+    },
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
     isConfigured: () => true,
   } as unknown as SystemOneClient;
@@ -168,8 +171,9 @@ test('test_system_one_settings_command_registers_and_renders_every_group', async
     assert.match(text, /Provider · Provider/);
     assert.match(text, /Status · Session/);
     assert.match(text, /Actions · Test connectivity/);
+    assert.match(text, /Actions · Check Laya health/);
     assert.match(text, /Type to search/, 'search is enabled');
-    assert.match(h.commands.get('jev-settings')?.description, /Deprecated alias/);
+    assert.equal(h.commands.has('jev-settings'), false);
   } finally {
     h.cleanup();
   }
@@ -251,6 +255,8 @@ test('test_provider_row_cycles_through_the_allowed_values', async () => {
       baseURL: '',
       model: 'jev-latest',
     });
+    const rendered = component.render(90).map(strip).join('\n');
+    assert.match(rendered, /Provider · API key\s+not required \(local endpoint\)/);
   } finally {
     h.cleanup();
   }

@@ -828,6 +828,14 @@ test('test_fallback_retries_secondary_once_on_authentication_error', async () =>
     assert.equal(client.stats.provider, 'openrouter');
     assert.equal(client.stats.totalTokens, 3);
     assert.equal(client.stats.lastError, undefined);
+
+    await client.evaluate({ state: 'next state', questions: NOUL_QUESTION });
+    assert.equal(client.stats.provider, 'typesafe');
+    assert.equal(
+      client.stats.fallback,
+      undefined,
+      'a later primary response clears the old fallback',
+    );
   } finally {
     stub.restore();
     env.restore();

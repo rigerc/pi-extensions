@@ -130,12 +130,12 @@ test('/system-one test <prompt> designs the evaluation with the model, then runs
   assert.equal(calls.at(-1)?.level, 'info');
 });
 
-test('registers /system-one canonically and keeps /jev as a deprecated alias', async () => {
+test('registers /system-one without the old /jev alias', async () => {
   const { commands, calls } = harness({});
   assert.match(commands.get('system-one')?.description, /Manage System One integration/);
-  assert.match(commands.get('jev')?.description, /Deprecated alias for \/system-one/);
+  assert.equal(commands.has('jev'), false);
 
-  await commands.get('jev').handler('help', {
+  await commands.get('system-one').handler('help', {
     ui: { notify: (message: string, level?: string) => calls.push({ message, level }) },
   });
   assert.match(calls.at(-1)!.message, /System One commands/);
@@ -221,10 +221,14 @@ test('/system-one status reports config origin and excludes own tools from the r
   await run('status');
 
   const status = calls.at(-1)!.message;
-  assert.match(status, /Configured: Yes \(from ~\/\.pi\/agent\/secrets\/typesafe_api_key\)/);
-  assert.match(status, /Provider: typesafe \(https:\/\/api\.typesafe\.ai\)/);
+  assert.match(
+    status,
+    /Provider configured: Yes \(from ~\/\.pi\/agent\/secrets\/typesafe_api_key\)/,
+  );
+  assert.match(status, /Selected provider: typesafe \(https:\/\/api\.typesafe\.ai\)/);
   assert.match(status, /Authentication: bearer/);
-  assert.match(status, /Model: jev-latest/);
+  assert.match(status, /Configured model: jev-latest/);
+  assert.match(status, /Cost \(session\): n\/a/);
   // active: read. bash is routable; the three jev tools are ours and must not count.
   assert.match(status, /Active tools: 1 \/ Available: 5 \(1 routable\)/);
 });
@@ -256,12 +260,13 @@ test('/system-one status reports the active provider, session cost and cross-pro
 
   await run('status');
   const status = calls.at(-1)!.message;
-  assert.match(status, /Configured: Yes \(from \$OPENROUTER_API_KEY\)/);
-  assert.match(status, /Provider: openrouter \(https:\/\/openrouter\.ai\/api\)/);
-  assert.match(status, /Model: jev-latest/);
+  assert.match(status, /Provider configured: Yes \(from \$OPENROUTER_API_KEY\)/);
+  assert.match(status, /Selected provider: openrouter \(https:\/\/openrouter\.ai\/api\)/);
+  assert.match(status, /Configured model: jev-latest/);
   assert.match(status, /Total tokens used: 1234/);
   assert.match(status, /Cost \(session\): \$0\.004200/);
-  assert.match(status, /Fallback: typesafe → openrouter \(401 unauthorized\)/);
+  assert.match(status, /Last response: openrouter \/ jev-latest/);
+  assert.match(status, /Fallback \(last request\): typesafe → openrouter \(401 unauthorized\)/);
 });
 
 test('/system-one status treats keyless local Laya as configured', async () => {
@@ -284,10 +289,65 @@ test('/system-one status treats keyless local Laya as configured', async () => {
 
   await run('status');
   const status = calls.at(-1)!.message;
-  assert.match(status, /Configured: Yes \(local endpoint; no key required\)/);
-  assert.match(status, /Provider: laya \(http:\/\/127\.0\.0\.1:8000\)/);
+  assert.match(status, /Provider configured: Yes \(local endpoint; no key required\)/);
+  assert.match(status, /Selected provider: laya \(http:\/\/127\.0\.0\.1:8000\)/);
   assert.match(status, /Authentication: not required/);
+  assert.match(status, /Laya health \(last check\): not checked/);
   assert.doesNotMatch(status, /Auto mode inactive/);
+});
+
+test('/system-one health reports Laya details and updates the cached status', async () => {
+  const health = {
+    endpoint: 'http://127.0.0.1:8000/health',
+    loaded: ['english'],
+    device: 'cuda',
+    checkedAt: Date.now(),
+  };
+  const { run, calls } = harness(
+    {},
+    {},
+    {
+      getProviderInfo: () => ({
+        provider: 'laya',
+        label: 'Laya (local)',
+        baseURL: 'http://127.0.0.1:8000',
+        model: 'jev-latest',
+        keyOrigin: null,
+        authMode: 'none',
+      }),
+      getLayaHealthStatus: () => ({
+        endpoint: health.endpoint,
+        checkedAt: health.checkedAt,
+        result: health,
+      }),
+      checkLayaHealth: async () => health,
+    },
+  );
+
+  await run('health');
+  assert.match(calls.at(-1)!.message, /Laya healthy: http:\/\/127\.0\.0\.1:8000\/health/);
+  assert.match(calls.at(-1)!.message, /Loaded models: english/);
+  assert.match(calls.at(-1)!.message, /use \/system-one test to verify inference/);
+  await run('status');
+  assert.match(
+    calls.at(-1)!.message,
+    /Laya health \(last check\): healthy; 1 model\(s\) loaded on cuda/,
+  );
+});
+
+test('/system-one health reports failure without claiming the provider is unconfigured', async () => {
+  const { run, calls } = harness(
+    {},
+    {},
+    {
+      checkLayaHealth: async () => {
+        throw new Error('Select Laya as the provider first.');
+      },
+    },
+  );
+  await run('health');
+  assert.equal(calls.at(-1)!.level, 'error');
+  assert.match(calls.at(-1)!.message, /Select Laya as the provider first/);
 });
 
 test('/system-one status reports effective legacy configuration once', async () => {

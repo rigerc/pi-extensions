@@ -5,6 +5,7 @@ import { PROVIDER_VALUES, SETTING_SPECS } from '../src/config.js';
 import {
   ChoiceSubmenu,
   InfoSubmenu,
+  LayaHealthSubmenu,
   TextInputSubmenu,
   buildSettingItems,
   settingsUiTheme,
@@ -44,7 +45,14 @@ test('test_rows_are_generated_from_the_registry_for_every_group', () => {
     }
     assert.deepEqual(
       ids.filter((id) => !SETTING_SPECS.some((s) => s.key === id)),
-      ['status.apiKey', 'status.session', 'action.test', 'action.persist', 'action.reset'],
+      [
+        'status.apiKey',
+        'status.session',
+        'action.layaHealth',
+        'action.test',
+        'action.persist',
+        'action.reset',
+      ],
     );
 
     for (const item of items) {
@@ -227,6 +235,79 @@ test('test_info_submenu_closes_on_enter_or_escape', () => {
   submenu.handleInput(ENTER);
   submenu.handleInput(ESCAPE);
   assert.equal(closed, 2);
+});
+
+test('test_laya_health_action_reports_a_live_probe_result', async () => {
+  let rendered = 0;
+  const client = {
+    checkLayaHealth: async () => ({
+      endpoint: 'http://127.0.0.1:8000/health',
+      loaded: [],
+      device: 'cpu',
+      checkedAt: Date.now(),
+    }),
+  } as unknown as SystemOneClient;
+  const submenu = new LayaHealthSubmenu(
+    client,
+    UI,
+    () => {},
+    () => {
+      rendered += 1;
+    },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  const output = submenu.render(90).join('\n');
+  assert.match(output, /Healthy/);
+  assert.match(output, /none \(lazy loading\)/);
+  assert.match(output, /Use Test connectivity to verify inference/);
+  assert.equal(rendered, 1);
+});
+
+test('test_status_submenu_reads_provider_and_health_when_opened', () => {
+  const h = makeSettingsHarness();
+  let selected: 'openrouter' | 'laya' = 'openrouter';
+  const client = {
+    getProviderInfo: () => ({
+      provider: selected,
+      label: selected,
+      baseURL: selected === 'laya' ? 'http://127.0.0.1:8000' : 'https://openrouter.ai/api',
+      model: 'jev-latest',
+      keyOrigin: null,
+      authMode: selected === 'laya' ? 'none' : 'bearer',
+    }),
+    getLayaHealthStatus: () => ({ result: { loaded: [], device: 'cpu' } }),
+    stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
+    isConfigured: () => true,
+  } as unknown as SystemOneClient;
+  try {
+    const items = buildSettingItems(h.service, client, UI, () => {});
+    selected = 'laya';
+    const status = items.find((item) => item.id === 'status.session')!;
+    const output = status.submenu!('', () => {})
+      .render(90)
+      .join('\n');
+    assert.match(output, /provider:    laya/);
+    assert.match(output, /health \(last check\): healthy/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('test_laya_health_action_explains_when_a_hosted_provider_is_selected', async () => {
+  const client = {
+    checkLayaHealth: async () => {
+      throw new Error('Select Laya as the provider first.');
+    },
+    getProviderInfo: () => ({ provider: 'openrouter' }),
+  } as unknown as SystemOneClient;
+  const submenu = new LayaHealthSubmenu(
+    client,
+    UI,
+    () => {},
+    () => {},
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(submenu.render(90).join('\n'), /Select Laya as the provider/);
 });
 
 test('test_settings_ui_theme_adapts_a_pi_theme', () => {

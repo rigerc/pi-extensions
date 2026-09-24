@@ -96,9 +96,12 @@ export PI_SYSTEM_ONE_PROVIDER=laya
 ```
 
 You may instead store the Pi-side token in
-`~/.pi/agent/secrets/laya_api_key`. Run `/system-one status` and `/system-one test` to verify the
-selected endpoint. A Laya failure is surfaced to the caller and never retried against
-TypeSafe or OpenRouter.
+`~/.pi/agent/secrets/laya_api_key`. Run `/system-one health` to probe Laya's
+`GET /health` route. It reports the loaded checkpoints and device without running
+inference; a healthy response can still have no loaded checkpoints when lazy loading is
+enabled. Then run `/system-one test` to verify inference. `/system-one status` shows the
+last health result without contacting the server again. A Laya failure is surfaced to
+the caller and never retried against TypeSafe or OpenRouter.
 
 ### Provider configuration
 
@@ -164,6 +167,7 @@ immediately to the running session.
   Provider · Model              jev-latest
   Provider · API key            ••••••••  (read-only)
   Status · Session              live counters + provenance
+  Actions · Check Laya health    GET /health (no inference)
   Actions · Test connectivity   one real request
   Actions · Persist to file     user / project / both
   Actions · Reset to defaults   clear overrides
@@ -368,7 +372,8 @@ routing switches.
 ## Commands
 
 - `/system-one-settings` — Opens the interactive settings editor (modes, provider, live status, test/persist/reset actions).
-- `/system-one status` — Shows System One configuration (active provider, API root, model, authentication mode, and key source when present, together with which config layer supplied it), any hosted-provider fallback, auto-mode state, session request count, total tokens, session cost, truncated-state counts, and available tool counts.
+- `/system-one status` — Shows the selected provider and configured model, the backend and model that answered the last successful request, authentication and key source, the last cached Laya health check, any fallback on the last request, auto-mode state, session request count, tokens, cost, truncated-state counts, and available tool counts. Configuration alone does not mean the endpoint is reachable.
+- `/system-one health` — Checks the selected Laya server's `GET /health` route with a three-second timeout. Reports loaded models and device; use `/system-one test` to verify inference. The settings editor has the same action.
 - `/system-one help` — Lists available subcommands.
 - `/system-one skills [query]` — Discover and rank matching skills in the workspace using System One.
 - `/system-one test [prompt]` — With no prompt, runs the fixed connectivity smoke test. With a prompt, the active model designs typed questions for that prompt and the configured System One model evaluates them. Designed Noul questions may carry `true`/`false` descriptions, and Score rubrics need at least two levels ordered lowest → highest (index 0 is score 0), matching the SDK. Also accepts `/system-one eval` and `/system-one evaluate`.
@@ -432,11 +437,11 @@ Used for structured decisions, classifications, triage, and scoring.
 
 Version 0.8 renames the package and its public surface to describe the extension rather
 than one provider or model. Install `@rigerc/pi-system-one`, then adopt the canonical
-names below. Compatibility aliases remain available throughout the 0.8 release line.
+names below. The old `/jev` and `/jev-settings` slash commands are no longer registered;
+use `/system-one` and `/system-one-settings`.
 
 | pi-jev name                               | Canonical pi-system-one name            |
 | ----------------------------------------- | --------------------------------------- |
-| `/jev`, `/jev-settings`                   | `/system-one`, `/system-one-settings`   |
 | `PI_JEV_*`                                | `PI_SYSTEM_ONE_*`                       |
 | `--jev-*`                                 | `--system-one-*`                        |
 | `pi-jev.json`                             | `pi-system-one.json`                    |

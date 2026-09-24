@@ -95,6 +95,20 @@ export interface SystemOneProviderInfo {
   authMode: 'none' | 'bearer';
 }
 
+export interface LayaHealthResult {
+  endpoint: string;
+  loaded: string[];
+  device: string;
+  checkedAt: number;
+}
+
+export interface LayaHealthStatus {
+  endpoint: string;
+  checkedAt: number;
+  result?: LayaHealthResult;
+  error?: string;
+}
+
 /** Layered-config overrides pushed in by the settings service. */
 export interface ProviderOverrides {
   provider?: SystemOneProvider | 'auto';
@@ -618,6 +632,7 @@ export class SystemOneClient {
   private clients = new Map<SystemOneProvider, TypeSafeClient>();
   private apiKey: string | null = null;
   private providerOverrides: ProviderOverrides = {};
+  private lastLayaHealth?: LayaHealthStatus;
   public stats: SystemOneSessionStats = {
     requestsCount: 0,
     totalTokens: 0,
@@ -679,6 +694,43 @@ export class SystemOneClient {
     };
   }
 
+  /** A cached result for the currently selected endpoint; status never performs I/O. */
+  public getLayaHealthStatus(): LayaHealthStatus | null {
+    const config = this.getConfig();
+    if (config?.provider !== 'laya') return null;
+    const endpoint = `${config.baseURL.replace(/\/+$/, '')}/health`;
+    return this.lastLayaHealth?.endpoint === endpoint ? this.lastLayaHealth : null;
+  }
+
+  /** Probe Laya's server route without running inference or changing request counters. */
+  public async checkLayaHealth(): Promise<LayaHealthResult> {
+    const config = this.getConfig();
+    if (config?.provider !== 'laya') throw new Error('Select Laya as the provider first.');
+    const endpoint = `${config.baseURL.replace(/\/+$/, '')}/health`;
+    try {
+      const response = await fetch(endpoint, { signal: AbortSignal.timeout(3000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
+      const body: unknown = await response.json();
+      if (!body || typeof body !== 'object' || (body as { status?: unknown }).status !== 'ok') {
+        throw new Error('Unexpected health response (expected status: ok)');
+      }
+      const { loaded, device } = body as { loaded?: unknown; device?: unknown };
+      if (
+        !Array.isArray(loaded) ||
+        !loaded.every((model) => typeof model === 'string') ||
+        typeof device !== 'string'
+      ) {
+        throw new Error('Unexpected health response (invalid loaded models or device)');
+      }
+      const result: LayaHealthResult = { endpoint, loaded, device, checkedAt: Date.now() };
+      this.lastLayaHealth = { endpoint, checkedAt: result.checkedAt, result };
+      return result;
+    } catch (error) {
+      this.lastLayaHealth = { endpoint, checkedAt: Date.now(), error: errorMessage(error) };
+      throw error;
+    }
+  }
+
   public isConfigured(): boolean {
     return Boolean(this.getConfig());
   }
@@ -722,6 +774,7 @@ export class SystemOneClient {
     if (!primary) {
       throw new Error(describeUnconfigured());
     }
+    this.stats.fallback = undefined;
 
     const formattedQuestions: Record<string, any> = {};
     for (const [id, q] of Object.entries(request.questions)) {

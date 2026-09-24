@@ -14,11 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration
 
-- The 0.8 release line accepts legacy `/jev` and `/jev-settings` commands, `PI_JEV_*` variables, `--jev-*` flags, `pi-jev.json` files, `pi-jev-config` session entries, `jev`/`typesafe-jev` agent IDs, and `pi-jev-gate`/`jev-gate` binaries. Canonical inputs win when both names are present; legacy files are read-only fallbacks and all new writes use `pi-system-one` names.
+- The 0.8 release line accepts legacy `PI_JEV_*` variables, `--jev-*` flags, `pi-jev.json` files, `pi-jev-config` session entries, `jev`/`typesafe-jev` agent IDs, and `pi-jev-gate`/`jev-gate` binaries. Canonical inputs win when both names are present; legacy files are read-only fallbacks and all new writes use `pi-system-one` names.
+- The deprecated `/jev` and `/jev-settings` slash-command aliases are no longer registered. Use `/system-one` and `/system-one-settings`.
 - `/system-one status` reports effective legacy inputs so users can migrate without guessing which compatibility path is still active.
 
 ### Added
 
+- **Laya health check.** `/system-one health` and a settings action probe the selected Laya endpoint's `GET /health` route, reporting loaded checkpoints and device without running inference. `/system-one status` shows the last cached check.
 - **Local Laya provider.** Set `PI_SYSTEM_ONE_PROVIDER=laya` or choose Laya in `/system-one-settings` to use a Jev-compatible server at `http://127.0.0.1:8000`. Keyless loopback operation and optional `LAYA_API_KEY` bearer auth are supported; Laya is explicit-only and never falls back to a hosted provider. Requests use a 48,000-character state cap below Laya's server limit, and status/settings distinguish local no-auth from missing configuration.
 - **Bounded widening pass for routing.** Each route now asks one coverage Noul ("does this list cover the task?"); when the answer says no, exactly one more request judges the candidates the lexical shortlist never saw. This removes the recall ceiling the local term-overlap filter imposed on both routers, where a candidate that shared no token with the prompt was unreachable at any confidence.
 - **Conversation context for routing judgments.** `recent_context` carries the capped tail (1500 chars) of the previous assistant turn, so abbreviated follow-ups ("do the same for X") are judged with the context they depend on instead of the bare prompt.
@@ -44,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `/system-one status` now distinguishes configured provider/model from the last backend that answered, labels fallback as belonging to the last request, and shows an explicit `n/a` when no session cost was reported.
 - `pi-jev-gate --diff` no longer reports "No git changes detected" for a change made entirely of new untracked files, which previously let criteria pass against evidence that was never sent.
 - Tool-guard and gate criteria can no longer be silently discarded: a bare string Noul criterion is rejected instead of being accepted and dropped.
 - **A base URL can no longer leak one provider's key onto the other's host.** A `PI_SYSTEM_ONE_BASE_URL`/settings Base URL naming OpenRouter is ignored for TypeSafe (and vice versa), and a base URL naming a provider now selects that provider in auto-detect instead of having the other provider's key sent to it. An explicit provider choice still wins.
