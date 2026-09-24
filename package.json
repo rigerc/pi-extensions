@@ -4,13 +4,15 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "tsc -b packages/pi-skillshare packages/pi-model-picker",
+    "check": "tsc -b packages/pi-jev",
+    "check:pi-jev": "npm --prefix packages/pi-jev run typecheck",
     "test": "vitest run",
+    "test:pi-jev": "npm --prefix packages/pi-jev test",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "prepublishOnly": "npm run check",
-    "publish": "npm run prepublishOnly && npm publish -ws --access public",
-    "publish:dry": "npm pack -ws --dry-run"
+    "publish": "npm run prepublishOnly && npm publish --workspaces --access public",
+    "publish:dry": "npm pack --workspaces --dry-run"
   },
   "devDependencies": {
     "prettier": "^3.8.3",

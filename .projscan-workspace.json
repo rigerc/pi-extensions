@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-05-27T16:56:36.767Z",
+  "repos": [
+    {
+      "path": "/mnt/extra-ssd/dev/projects/pi-extensions/packages/pi-model-picker",
+      "name": "pi-model-picker"
+    }
+  ]
+}

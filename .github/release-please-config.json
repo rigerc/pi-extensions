@@ -4,10 +4,7 @@
   "linked-versions": true,
   "baseBranch": "master",
   "packages": {
-    "packages/pi-trekker-tasks": {
-      "changelog-path": "CHANGELOG.md"
-    },
-    "packages/pi-skillshare": {
+    "packages/pi-jev": {
       "changelog-path": "CHANGELOG.md"
     }
   },

@@ -1,16 +1,44 @@
 {
-  "$schema": "https://unpkg.com/@aliou/pi-guardrails@0.13.1/schema.json",
+  "$schema": "https://unpkg.com/@aliou/pi-guardrails@0.15.0/schema.json",
   "pathAccess": {
     "allowedPaths": [
-      "/dev/",
-      "/home/",
-      "/mnt/extra-ssd/dev/projects/",
-      "/",
-      "/tmp/pi-powerbar-repo/src/powerbar-provider/",
-      "/tmp/pi-powerbar-repo/src/powerbar-model/",
-      "/tmp/pi-powerbar-repo/src/powerbar/",
-      "/tmp/pi-powerbar-repo/"
+      {
+        "kind": "directory",
+        "path": "/dev"
+      },
+      {
+        "kind": "directory",
+        "path": "/home"
+      },
+      {
+        "kind": "directory",
+        "path": "/mnt/extra-ssd/dev/projects"
+      },
+      {
+        "kind": "directory",
+        "path": ""
+      },
+      {
+        "kind": "directory",
+        "path": "/tmp/pi-powerbar-repo/src/powerbar-provider"
+      },
+      {
+        "kind": "directory",
+        "path": "/tmp/pi-powerbar-repo/src/powerbar-model"
+      },
+      {
+        "kind": "directory",
+        "path": "/tmp/pi-powerbar-repo/src/powerbar"
+      },
+      {
+        "kind": "directory",
+        "path": "/tmp/pi-powerbar-repo"
+      },
+      {
+        "kind": "directory",
+        "path": "/tmp"
+      }
     ]
   },
-  "version": "0.9.0-20260327"
+  "version": "0.13.0-20260619"
 }
