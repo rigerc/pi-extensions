@@ -102,6 +102,8 @@ inference; a healthy response can still have no loaded checkpoints when lazy loa
 enabled. Then run `/system-one test` to verify inference. `/system-one status` shows the
 last health result without contacting the server again. A Laya failure is surfaced to
 the caller and never retried against TypeSafe or OpenRouter.
+When Laya is selected, the footer shows endpoint health. It checks at session start,
+after provider changes, and every minute; `/system-one health` also updates it.
 
 ### Provider configuration
 
@@ -149,33 +151,38 @@ Then check status inside Pi:
 
 ## Settings & persistence
 
-`/system-one-settings` opens a searchable editor for every mode and provider setting. Changes apply
-immediately to the running session.
+`/system-one-settings` opens a tabbed editor. Changes stay in a draft until you save.
+**Ctrl+S** writes changed settings to `~/.pi/agent/pi-system-one.json` and applies them
+to the running session. **Esc** discards the draft; if you changed anything, it asks
+for confirmation first.
 
 ```text
 /system-one-settings
 
-  Modes · Auto tool routing     off
-  Modes · Auto skill routing    off
-  Modes · Auto-model            off
-  Modes · Agent orchestration   off
-  Modes · Tool guard            off
-  Modes · System One compaction off
-  Modes · System One tools      off
-  Provider · Provider           auto
-  Provider · Base URL           (provider default)
-  Provider · Model              jev-latest
-  Provider · API key            ••••••••  (read-only)
-  Status · Session              live counters + provenance
-  Actions · Check Laya health    GET /health (no inference)
-  Actions · Test connectivity   one real request
-  Actions · Persist to file     user / project / both
-  Actions · Reset to defaults   clear overrides
+  [Modes]  Provider  Status  Actions
+  → Auto tool routing       off
+    Auto skill routing      off
+    Tool guard              off
+
+  Draft only · Ctrl+S Save · Esc Discard
 ```
+
+Use Tab and Shift+Tab to switch tabs. Up/Down moves through rows; Enter or Space changes
+a setting (use Enter while a search is active). Type to search the current tab. Each tab
+keeps its search and selection when you leave it. Esc returns from a detail view or
+editor. The selected setting's description shows its source layer or marks an unsaved
+draft value.
+
+| Tab | Contents |
+| --- | --- |
+| Modes | Routing, model, agents, guard, compaction, and tool access switches |
+| Provider | Provider, Base URL, Model, and read-only API key source |
+| Status | Live session counters and effective values with source layers |
+| Actions | Laya health and connectivity test |
 
 ### Layers
 
-Settings resolve lowest → highest. `/system-one status` and the **Status · Session** row show which
+Settings resolve lowest → highest. `/system-one status` and the **Status → Session** row show which
 layer supplied each value.
 
 | Layer   | Source                                                                  |
@@ -185,16 +192,19 @@ layer supplied each value.
 | project | `<repo>/.pi/pi-system-one.json`                                         |
 | env     | `PI_SYSTEM_ONE_*` variables                                             |
 | flag    | `--system-one-*` CLI flags (on-only)                                    |
-| session | edits from `/system-one-settings` and `/system-one <mode> on\|off`      |
+| session | saved edits and `/system-one <mode> on\|off` in the current session       |
 
-A session override always wins, including over an env var, and is stored in the session
-branch so it survives resuming that session.
+After Save, a session override makes the new value effective immediately. Project files,
+environment variables, and CLI flags keep their priority over the user file in a **new**
+session. The current session's saved override survives resuming that session.
 
-### Persisting changes
+### Saving changes
 
-Edits are **session-scoped by default** — they disappear in a new session. Use
-**Actions · Persist to file** to write the current overrides to the user file, the project
-file, or both:
+Saving from the editor always writes the **user file**. It merges only the changed
+settings, so unrelated values already in the file remain. A failed write leaves the
+draft open and does not apply it. `/system-one <mode> on|off` also saves its change to
+the user file immediately. The project file can still supply project-specific values,
+but this editor does not write or delete it.
 
 ```jsonc
 // ~/.pi/agent/pi-system-one.json
@@ -202,14 +212,14 @@ file, or both:
   "version": 1,
   "provider": "openrouter",
   "model": "jev-latest",
-  "autoRouting": false,
+  "autoToolRouting": false,
   "toolGuard": false,
 }
 ```
 
 **API keys are never written to these files or to session entries.** The provider is
 editable, but a key always comes from `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`,
-`LAYA_API_KEY`, or `~/.pi/agent/secrets/`. The **Provider · API key** row is read-only
+`LAYA_API_KEY`, or `~/.pi/agent/secrets/`. The **Provider → API key** row is read-only
 and shows the source (for example `$OPENROUTER_API_KEY`), or “not required” for a
 keyless local Laya endpoint.
 
@@ -371,7 +381,7 @@ routing switches.
 
 ## Commands
 
-- `/system-one-settings` — Opens the interactive settings editor (modes, provider, live status, test/persist/reset actions).
+- `/system-one-settings` — Opens the tabbed settings editor. Ctrl+S saves changed values to the user file; Esc discards the draft.
 - `/system-one status` — Shows the selected provider and configured model, the backend and model that answered the last successful request, authentication and key source, the last cached Laya health check, any fallback on the last request, auto-mode state, session request count, tokens, cost, truncated-state counts, and available tool counts. Configuration alone does not mean the endpoint is reachable.
 - `/system-one health` — Checks the selected Laya server's `GET /health` route with a three-second timeout. Reports loaded models and device; use `/system-one test` to verify inference. The settings editor has the same action.
 - `/system-one help` — Lists available subcommands.

@@ -1,28 +1,34 @@
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import { DynamicBorder, getSettingsListTheme } from '@earendil-works/pi-coding-agent';
 import {
-  Container,
   Input,
   Key,
   matchesKey,
   SettingsList,
-  Text,
   truncateToWidth,
   type SettingItem,
 } from '@earendil-works/pi-tui';
 import type { SystemOneClient } from './system-one.js';
-import { SETTING_SPECS, isSettingKey, type ResolvedSettings } from './config.js';
 import {
-  PERSIST_SCOPES,
-  formatSettingValue,
-  type PersistScope,
-  type SettingsService,
-} from './settings.js';
+  SETTING_SPECS,
+  coerceSetting,
+  getSpec,
+  isSettingKey,
+  type ResolvedSettings,
+  type SettingKey,
+  type SystemOneSettings,
+  type RawSettings,
+} from './config.js';
+import { formatSettingValue, type SettingsService } from './settings.js';
 
 /** Minimal theme helpers handed to submenu components (they render outside SettingsList). */
 export interface SettingsUiTheme {
   accent(text: string): string;
   dim(text: string): string;
+  muted(text: string): string;
+  success(text: string): string;
+  warning(text: string): string;
+  error(text: string): string;
   bold(text: string): string;
 }
 
@@ -33,13 +39,19 @@ export function settingsUiTheme(theme: {
   return {
     accent: (text) => theme.fg('accent', text),
     dim: (text) => theme.fg('dim', text),
+    muted: (text) => theme.fg('muted', text),
+    success: (text) => theme.fg('success', text),
+    warning: (text) => theme.fg('warning', text),
+    error: (text) => theme.fg('error', text),
     bold: (text) => theme.bold(text),
   };
 }
 
 type SubmenuDone = (selectedValue?: string, options?: { navigateTo?: string }) => void;
+type FeedbackKind = 'success' | 'warning' | 'error';
+type Feedback = (kind: FeedbackKind, message: string) => void;
 
-/** Free-text editor for string settings. Enter saves; empty is only valid when allowed. */
+/** Free-text editor for string settings. Enter updates the draft. */
 export class TextInputSubmenu {
   private input = new Input();
   private error: string | undefined;
@@ -84,8 +96,8 @@ export class TextInputSubmenu {
   render(width: number): string[] {
     const lines = [truncateToWidth(this.ui.accent(this.ui.bold(this.title)), width)];
     lines.push(...this.input.render(width));
-    if (this.error) lines.push(truncateToWidth(this.error, width));
-    lines.push(truncateToWidth(this.ui.dim('  enter save · esc cancel'), width));
+    if (this.error) lines.push(truncateToWidth(this.ui.error(this.error), width));
+    lines.push(truncateToWidth(this.ui.dim('  Enter keep edit · Esc cancel'), width));
     return lines;
   }
 
@@ -115,73 +127,18 @@ export class InfoSubmenu {
   }
 }
 
-export interface Choice {
-  value: string;
-  label: string;
-  description?: string;
-}
-
-/**
- * Arrow-key picker for side-effecting rows. The chosen value is handed to `onChoose`
- * and `done()` is called WITHOUT a value, so SettingsList never treats an action as a
- * setting change.
- */
-export class ChoiceSubmenu {
-  private index = 0;
-
-  constructor(
-    private title: string,
-    private choices: Choice[],
-    private ui: SettingsUiTheme,
-    private onChoose: (value: string) => void,
-    private done: SubmenuDone,
-  ) {}
-
-  handleInput(data: string): void {
-    if (matchesKey(data, Key.up)) {
-      this.index = (this.index - 1 + this.choices.length) % this.choices.length;
-      return;
-    }
-    if (matchesKey(data, Key.down)) {
-      this.index = (this.index + 1) % this.choices.length;
-      return;
-    }
-    if (matchesKey(data, Key.enter)) {
-      this.onChoose(this.choices[this.index]!.value);
-      this.done();
-      return;
-    }
-    if (matchesKey(data, Key.escape)) this.done();
-  }
-
-  render(width: number): string[] {
-    const lines = [truncateToWidth(this.ui.accent(this.ui.bold(this.title)), width)];
-    this.choices.forEach((choice, i) => {
-      const selected = i === this.index;
-      const prefix = selected ? '▶ ' : '  ';
-      const label = selected ? this.ui.accent(choice.label) : choice.label;
-      const description = choice.description ? this.ui.dim(`  ${choice.description}`) : '';
-      lines.push(truncateToWidth(`${prefix}${label}${description}`, width));
-    });
-    lines.push(truncateToWidth(this.ui.dim('  ↑↓ move · enter choose · esc cancel'), width));
-    return lines;
-  }
-
-  invalidate(): void {
-    /* no cached state */
-  }
-}
-
 /** Runs one live evaluation so the user can confirm the provider actually works. */
 export class TestConnectivitySubmenu {
-  private lines: string[] = ['Running one System One request…'];
+  private lines: string[];
 
   constructor(
     private systemOneClient: SystemOneClient,
     private ui: SettingsUiTheme,
     private done: SubmenuDone,
     requestRender: () => void,
+    private report?: (kind: FeedbackKind, message: string) => void,
   ) {
+    this.lines = [this.ui.warning('Running one System One request…')];
     void this.run(requestRender);
   }
 
@@ -199,24 +156,26 @@ export class TestConnectivitySubmenu {
       const answer = response.answers['is_billing'];
       const cost = response.usage?.costUsd;
       this.lines = [
-        this.ui.accent('Connected.'),
+        this.ui.success('Connected.'),
         `  model:    ${response.model}`,
         `  answered: is_billing = ${String(answer?.value)}`,
         `  tokens:   ${response.usage?.totalTokens ?? 0}${cost !== undefined ? `  cost: $${cost.toFixed(6)}` : ''}`,
         `  elapsed:  ${response.elapsedMs}ms`,
       ];
+      this.report?.('success', `Connected to ${response.model}.`);
     } catch (error) {
       const provider = this.systemOneClient.getProviderInfo();
       const hint =
         provider?.provider === 'laya'
           ? 'Check that laya-serve is running and the Base URL omits /v1.'
-          : 'Check the key source and provider in the rows above.';
+          : 'Check the key source and provider in the Provider tab.';
       this.lines = [
-        this.ui.accent('Failed.'),
+        this.ui.error('Failed.'),
         `  ${(error as { message?: string } | undefined)?.message ?? String(error)}`,
         '',
         `  ${hint}`,
       ];
+      this.report?.('error', 'Connectivity test failed.');
     }
     requestRender();
   }
@@ -239,14 +198,16 @@ export class TestConnectivitySubmenu {
 
 /** Read Laya's lightweight health route; this does not perform model inference. */
 export class LayaHealthSubmenu {
-  private lines: string[] = ['Checking Laya server…'];
+  private lines: string[];
 
   constructor(
     private systemOneClient: SystemOneClient,
     private ui: SettingsUiTheme,
     private done: SubmenuDone,
     requestRender: () => void,
+    private report?: (kind: FeedbackKind, message: string) => void,
   ) {
+    this.lines = [this.ui.warning('Checking Laya server…')];
     void this.run(requestRender);
   }
 
@@ -254,24 +215,26 @@ export class LayaHealthSubmenu {
     try {
       const result = await this.systemOneClient.checkLayaHealth();
       this.lines = [
-        this.ui.accent('Healthy.'),
+        this.ui.success('Healthy.'),
         `  endpoint: ${result.endpoint}`,
         `  loaded:   ${result.loaded.length ? result.loaded.join(', ') : 'none (lazy loading)'}`,
         `  device:   ${result.device}`,
         '',
         this.ui.dim('  Use Test connectivity to verify inference.'),
       ];
+      this.report?.('success', 'Laya health check passed.');
     } catch (error) {
       const hint =
         this.systemOneClient.getProviderInfo()?.provider === 'laya'
           ? 'Check that laya-serve is running and the Base URL omits /v1.'
           : 'Select Laya as the provider to use this action.';
       this.lines = [
-        this.ui.accent('Failed.'),
+        this.ui.error('Failed.'),
         `  ${(error as { message?: string } | undefined)?.message ?? String(error)}`,
         '',
         this.ui.dim(`  ${hint}`),
       ];
+      this.report?.('error', 'Laya health check failed.');
     }
     requestRender();
   }
@@ -296,23 +259,25 @@ function maskedKey(provider: ReturnType<SystemOneClient['getProviderInfo']>): st
   return provider.keyOrigin ? `•••••••• (from ${provider.keyOrigin})` : '(unset)';
 }
 
-/** Build the SettingsList rows: one per spec, then read-only status and actions. */
+/** Build the SettingsList rows from the draft, plus read-only status and diagnostics. */
 export function buildSettingItems(
   settings: SettingsService,
   systemOneClient: SystemOneClient,
   ui: SettingsUiTheme,
   requestRender: () => void,
+  report: Feedback = () => {},
+  draft: SystemOneSettings = settings.values,
 ): SettingItem[] {
   const resolved: ResolvedSettings = settings.resolvedSettings;
   const items: SettingItem[] = [];
 
   for (const spec of SETTING_SPECS) {
-    const label = `${spec.group} · ${spec.label}`;
-    const value = resolved.values[spec.key];
+    const label = spec.label;
+    const value = draft[spec.key];
     const shared = {
       id: spec.key,
       label,
-      description: spec.description,
+      description: `${spec.description} · Source: ${resolved.provenance[spec.key]}`,
     };
 
     if (spec.kind === 'boolean') {
@@ -330,7 +295,13 @@ export function buildSettingItems(
       currentValue:
         formatSettingValue(value) === '(provider default)' ? '(provider default)' : String(value),
       submenu: (_current, done) =>
-        new TextInputSubmenu(label, String(value), Boolean(spec.allowEmpty), ui, done),
+        new TextInputSubmenu(
+          `${spec.group} · ${label}`,
+          String(draft[spec.key]),
+          Boolean(spec.allowEmpty),
+          ui,
+          done,
+        ),
     });
   }
 
@@ -339,7 +310,7 @@ export function buildSettingItems(
 
   items.push({
     id: 'status.apiKey',
-    label: 'Provider · API key',
+    label: 'API key',
     description: 'Read-only. Keys are never written to config files or session entries.',
     currentValue: maskedKey(provider),
     submenu: (_current, done) => {
@@ -364,7 +335,7 @@ export function buildSettingItems(
 
   items.push({
     id: 'status.session',
-    label: 'Status · Session',
+    label: 'Session',
     description: 'Live counters and where each setting came from',
     currentValue: `${systemOneClient.stats.requestsCount} req`,
     submenu: (_current, done) => {
@@ -393,8 +364,8 @@ export function buildSettingItems(
               `    ${spec.label.padEnd(20).slice(0, 20)} ${formatSettingValue(currentResolved.values[spec.key])}  (${currentResolved.provenance[spec.key]})`,
           ),
           '',
-          ui.dim(`  user file:    ${paths.user}`),
-          ui.dim(`  project file: ${paths.project}`),
+          ui.dim(`  save target:   ${paths.user}`),
+          ui.dim(`  project input: ${paths.project} (read-only)`),
         ],
         done,
       );
@@ -403,67 +374,33 @@ export function buildSettingItems(
 
   items.push({
     id: 'action.layaHealth',
-    label: 'Actions · Check Laya health',
+    label: 'Check Laya health',
     description: 'GET /health on the selected Laya endpoint; no inference request',
     currentValue: 'run',
-    submenu: (_current, done) => new LayaHealthSubmenu(systemOneClient, ui, done, requestRender),
+    submenu: (_current, done) =>
+      new LayaHealthSubmenu(systemOneClient, ui, done, requestRender, report),
   });
 
   items.push({
     id: 'action.test',
-    label: 'Actions · Test connectivity',
+    label: 'Test connectivity',
     description: 'Send one System One request to the configured provider',
     currentValue: 'run',
     submenu: (_current, done) =>
-      new TestConnectivitySubmenu(systemOneClient, ui, done, requestRender),
-  });
-
-  items.push({
-    id: 'action.persist',
-    label: 'Actions · Persist to file',
-    description: 'Write the session overrides into a settings file',
-    currentValue: 'choose',
-    submenu: (_current, done) =>
-      new ChoiceSubmenu(
-        'Persist to file',
-        PERSIST_SCOPES.map((scope) => ({
-          value: scope,
-          label: scope,
-          description: scope === 'user' ? paths.user : scope === 'project' ? paths.project : 'both',
-        })),
-        ui,
-        (scope) => settings.persistToFile(scope as PersistScope),
-        done,
-      ),
-  });
-
-  items.push({
-    id: 'action.reset',
-    label: 'Actions · Reset to defaults',
-    description: 'Clear session overrides, optionally deleting the settings files',
-    currentValue: 'reset',
-    submenu: (_current, done) =>
-      new ChoiceSubmenu(
-        'Reset to defaults',
-        [
-          {
-            value: 'session',
-            label: 'Clear session overrides',
-            description: 'keeps settings files',
-          },
-          {
-            value: 'files',
-            label: 'Clear everything',
-            description: 'also deletes both settings files',
-          },
-        ],
-        ui,
-        (choice) => settings.resetToDefaults(choice === 'files'),
-        done,
-      ),
+      new TestConnectivitySubmenu(systemOneClient, ui, done, requestRender, report),
   });
 
   return items;
+}
+
+type SettingsTab = 'Modes' | 'Provider' | 'Status' | 'Actions';
+const TABS: readonly SettingsTab[] = ['Modes', 'Provider', 'Status', 'Actions'];
+
+function tabForItem(id: string): SettingsTab {
+  if (id.startsWith('action.')) return 'Actions';
+  if (id === 'status.session') return 'Status';
+  if (id === 'status.apiKey') return 'Provider';
+  return SETTING_SPECS.find((spec) => spec.key === id)?.group ?? 'Status';
 }
 
 /** Register `/system-one-settings`, opening the editor as an overlay. */
@@ -476,50 +413,170 @@ export function registerSystemOneSettingsCommand(
     await ctx.ui.custom<void>(
       (tui, theme, _keybindings, done) => {
         const ui = settingsUiTheme(theme);
-        const container = new Container();
-
-        container.addChild(new DynamicBorder((s: string) => theme.fg('accent', s)));
-        container.addChild(new Text(ui.accent(ui.bold('pi-system-one settings')), 1, 0));
-        container.addChild(
-          new Text(
-            ui.dim(
-              'Edits apply immediately and persist for this session. Use Persist to file to keep them.',
-            ),
-            1,
-            0,
-          ),
+        const border = new DynamicBorder((s: string) => theme.fg('accent', s));
+        const initial: SystemOneSettings = { ...settings.values };
+        const draft: SystemOneSettings = { ...initial };
+        let activeTab = 0;
+        let submenuOpen = false;
+        let confirmDiscard = false;
+        let feedback: { kind: FeedbackKind; message: string } | undefined;
+        const changedKeys = (): SettingKey[] =>
+          SETTING_SPECS.filter((spec) => draft[spec.key] !== initial[spec.key]).map(
+            (spec) => spec.key,
+          );
+        const save = () => {
+          const changes: RawSettings = {};
+          for (const key of changedKeys()) changes[key] = draft[key];
+          if (Object.keys(changes).length === 0) {
+            done();
+            return;
+          }
+          try {
+            const path = settings.saveUserSettings(changes);
+            ctx.ui.notify(`Saved settings to ${path}.`, 'info');
+            done();
+          } catch (error) {
+            report(
+              'error',
+              `Could not save settings: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        };
+        const discard = () => {
+          if (changedKeys().length > 0) confirmDiscard = true;
+          else done();
+        };
+        const report: Feedback = (kind, message) => {
+          feedback = { kind, message };
+          tui.requestRender();
+        };
+        const items = buildSettingItems(
+          settings,
+          systemOneClient,
+          ui,
+          () => tui.requestRender(),
+          report,
+          draft,
         );
+        const rowsByTab = new Map(
+          TABS.map((tab) => [tab, items.filter((item) => tabForItem(item.id) === tab)]),
+        );
+        for (const item of items) {
+          if (!item.submenu) continue;
+          const open = item.submenu;
+          item.submenu = (current, close) => {
+            submenuOpen = true;
+            return open(current, (value, options) => {
+              submenuOpen = false;
+              close(value, options);
+            });
+          };
+        }
 
-        const items = buildSettingItems(settings, systemOneClient, ui, () => tui.requestRender());
-        const list = new SettingsList(
-          items,
-          Math.max(8, Math.min(items.length + 2, 18)),
-          getSettingsListTheme(),
-          (id, newValue) => {
-            if (isSettingKey(id) && !settings.set(id, newValue)) {
-              ctx.ui.notify(
-                `pi-system-one settings: rejected value "${newValue}" for ${id}`,
-                'warning',
-              );
-            }
-            tui.requestRender();
+        const baseTheme = getSettingsListTheme();
+        const listTheme = {
+          ...baseTheme,
+          value: (value: string, selected: boolean) => {
+            if (value === 'on') return ui.success(value);
+            if (value === 'off') return ui.muted(value);
+            if (value === '(unset)') return ui.warning(value);
+            return baseTheme.value(value, selected);
           },
-          () => done(),
-          { enableSearch: true },
-        );
+        };
+        const lists = TABS.map((tab) => {
+          const rows = rowsByTab.get(tab)!;
+          return new SettingsList(
+            rows,
+            Math.min(rows.length, 10),
+            listTheme,
+            (id, newValue) => {
+              if (isSettingKey(id)) {
+                const spec = getSpec(id)!;
+                const value = coerceSetting(spec, newValue);
+                if (value !== undefined) {
+                  draft[id] = value as never;
+                  report('warning', `${spec.label}: ${formatSettingValue(value)} · unsaved.`);
+                } else {
+                  report('warning', `Rejected ${id}: ${newValue}.`);
+                }
+              }
+              tui.requestRender();
+            },
+            discard,
+            { enableSearch: true },
+          );
+        });
 
-        container.addChild(list);
-        container.addChild(new DynamicBorder((s: string) => theme.fg('accent', s)));
+        const refresh = () => {
+          const resolved = settings.resolvedSettings;
+          for (const spec of SETTING_SPECS) {
+            const row = items.find((item) => item.id === spec.key)!;
+            row.description = `${spec.description} · ${draft[spec.key] !== initial[spec.key] ? 'Unsaved draft' : `Source: ${resolved.provenance[spec.key]}`}`;
+            lists[TABS.indexOf(spec.group)].updateValue(
+              spec.key,
+              formatSettingValue(draft[spec.key]),
+            );
+          }
+          lists[1].updateValue('status.apiKey', maskedKey(systemOneClient.getProviderInfo()));
+          lists[2].updateValue('status.session', `${systemOneClient.stats.requestsCount} req`);
+        };
 
         return {
           render: (width: number) => {
-            list.updateValue('status.apiKey', maskedKey(systemOneClient.getProviderInfo()));
-            list.updateValue('status.session', `${systemOneClient.stats.requestsCount} req`);
-            return container.render(width);
+            refresh();
+            if (confirmDiscard) {
+              return [
+                ...border.render(width),
+                truncateToWidth(ui.warning(ui.bold('  Discard unsaved changes?')), width),
+                truncateToWidth('  Enter discard · Esc keep editing', width),
+                ...border.render(width),
+              ];
+            }
+            const tabBar = TABS.map((tab, index) => {
+              const label = width < 52 ? tab[0] : tab;
+              return index === activeTab ? ui.accent(ui.bold(`[${label}]`)) : ` ${label} `;
+            }).join(' ');
+            const status = feedback
+              ? ui[feedback.kind](
+                  `  ${feedback.kind === 'success' ? '✓' : feedback.kind === 'error' ? '✗' : '!'} ${feedback.message}`,
+                )
+              : '';
+            return [
+              ...border.render(width),
+              truncateToWidth(ui.accent(ui.bold('  pi-system-one settings')), width),
+              truncateToWidth(`  ${tabBar}`, width),
+              truncateToWidth(ui.dim('  Draft changes · Save writes the user file'), width),
+              '',
+              ...lists[activeTab].render(width),
+              '',
+              truncateToWidth(status, width),
+              truncateToWidth(
+                ui.dim(
+                  submenuOpen
+                    ? '  Esc return to tab'
+                    : `  Ctrl+S Save · Esc ${changedKeys().length ? 'Discard' : 'Close'} · ${changedKeys().length} unsaved · Tab switch`,
+                ),
+                width,
+              ),
+              ...border.render(width),
+            ];
           },
-          invalidate: () => container.invalidate(),
+          invalidate: () => lists.forEach((list) => list.invalidate()),
           handleInput: (data: string) => {
-            list.handleInput(data);
+            if (confirmDiscard) {
+              if (matchesKey(data, Key.enter)) done();
+              else if (matchesKey(data, Key.escape)) confirmDiscard = false;
+            } else if (!submenuOpen && matchesKey(data, Key.ctrl('s'))) {
+              save();
+            } else if (
+              !submenuOpen &&
+              (matchesKey(data, Key.tab) || matchesKey(data, Key.shift(Key.tab)))
+            ) {
+              activeTab =
+                (activeTab + (matchesKey(data, Key.tab) ? 1 : TABS.length - 1)) % TABS.length;
+            } else {
+              lists[activeTab].handleInput(data);
+            }
             tui.requestRender();
           },
         };

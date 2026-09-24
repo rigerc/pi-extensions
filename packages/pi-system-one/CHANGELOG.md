@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `/system-one-settings` now edits a draft in Modes, Provider, Status, and Actions tabs. Ctrl+S saves changed values to the user file; Esc discards them. Mode commands also save to the user file. Project configuration remains readable but is no longer a write target in the editor.
 - Tool-guard's `references_missing_path` Noul is gone: existence is not a model judgment. The remaining `invalid_parameters` question now receives the tool's `description` and `parameters` schema, so argument shape is judged against the tool's real contract.
 - Tool-guard runs the deterministic check even when Jev is unconfigured, and only asks Jev for what the filesystem cannot answer.
 - Gate state is now `{ output, criteria, truncated }`, and the instruction requires answering no when the criteria depend on content that may have been cut. A truncated evaluation is never silently treated as complete evidence.

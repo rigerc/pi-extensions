@@ -22,12 +22,10 @@ import {
 } from './config.js';
 import {
   appendSessionOverrides,
-  deleteSettingsFile,
   legacyProjectSettingsPath,
   legacyUserSettingsPath,
   projectSettingsPath,
   readSessionOverridesWithSource,
-  readSettingsFile,
   readSettingsFileWithLegacy,
   userSettingsPath,
   writeSettingsFile,
@@ -62,9 +60,6 @@ export interface SessionStatus {
   legacyInputs: string[];
 }
 
-export const PERSIST_SCOPES = ['user', 'project', 'both'] as const;
-export type PersistScope = (typeof PERSIST_SCOPES)[number];
-
 export interface SettingsServiceOptions {
   /** Environment layer source; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
@@ -84,8 +79,8 @@ export interface SettingsServiceOptions {
  *
  * Layering (lowest → highest): defaults → user file → project file → env → CLI flag
  * → session overrides. Session overrides are held in memory and written to the session
- * branch so they survive a resume, and they always win so a TUI edit beats an env var
- * for the rest of the session.
+ * branch so they survive a resume. New edits are written to the user file first and
+ * then applied as session overrides for the current session.
  */
 export class SettingsService {
   private user: RawSettings = {};
@@ -129,7 +124,7 @@ export class SettingsService {
     return this.resolved.provenance;
   }
 
-  /** Session-layer overrides only (what the TUI and `/system-one … on|off` wrote). */
+  /** Session-layer overrides from saved settings and `/system-one … on|off`. */
   public get sessionOverrides(): RawSettings {
     return { ...this.session };
   }
@@ -164,7 +159,7 @@ export class SettingsService {
     return this.resolved;
   }
 
-  /** Update one setting in the session layer and apply it immediately. */
+  /** Save one setting to the user file and apply it immediately. */
   public set(key: SettingKey, raw: unknown): boolean {
     const spec = getSpec(key);
     if (!spec) return false;
@@ -172,53 +167,42 @@ export class SettingsService {
     const coerced = coerceSetting(spec, raw);
     if (coerced === undefined) return false;
 
-    // Always store the value explicitly: comparing against the default would drop an
-    // override that exists precisely to beat an env var or a file.
-    this.session = { ...this.session, [key]: coerced };
-    this.recompute();
-    appendSessionOverrides(this.host, this.session);
-    this.apply();
+    this.saveUserSettings({ [key]: coerced });
     return true;
   }
 
-  /** Merge current session overrides into each destination file. Returns paths written. */
-  public persistToFile(scope: PersistScope): string[] {
-    const payload = serializeSettings(this.session);
-    if (Object.keys(payload).length === 0) return [];
-
-    const paths = this.paths();
-    const targets =
-      scope === 'user'
-        ? [paths.user]
-        : scope === 'project'
-          ? [paths.project]
-          : [paths.user, paths.project];
-    for (const target of targets) {
-      // Read each destination at save time so unrelated settings and later edits survive.
-      const existing = serializeSettings(readSettingsFile(target));
-      writeSettingsFile(target, { ...existing, ...payload });
+  /** Atomically save validated changes to the user file, then apply them in this session. */
+  public saveUserSettings(changes: RawSettings): string | undefined {
+    let validated: RawSettings = {};
+    for (const [key, raw] of Object.entries(changes)) {
+      if (!isSettingKey(key)) throw new Error(`Unknown setting: ${key}`);
+      const spec = getSpec(key)!;
+      const value = coerceSetting(spec, raw);
+      if (value === undefined) throw new Error(`Invalid value for ${key}`);
+      validated = { ...validated, [key]: value };
     }
-    return targets;
-  }
+    if (Object.keys(validated).length === 0) return undefined;
 
-  /** Clear session overrides and optionally remove the settings files. */
-  public resetToDefaults(dropFiles = false): void {
-    if (dropFiles) {
-      deleteSettingsFile(this.paths().user);
-      deleteSettingsFile(this.paths().project);
+    // Read at save time so edits outside this session survive. Include a legacy user
+    // file when the canonical path is still absent, since the new file takes its place.
+    const latest = readSettingsFileWithLegacy(this.userPath, this.legacyUserPath).settings;
+    let existing: RawSettings = {};
+    for (const spec of SETTING_SPECS) {
+      const value = coerceSetting(spec, latest[spec.key]);
+      if (value !== undefined) existing = { ...existing, [spec.key]: value };
     }
-    this.session = {};
-    appendSessionOverrides(this.host, this.session);
-    const user = readSettingsFileWithLegacy(this.userPath, this.legacyUserPath);
-    const project = readSettingsFileWithLegacy(this.projectPath, this.legacyProjectPath);
-    this.user = user.settings;
-    this.project = project.settings;
-    this.fileAndSessionLegacyInputs = [
-      ...(user.legacyPath ? [user.legacyPath] : []),
-      ...(project.legacyPath ? [project.legacyPath] : []),
-    ];
+    const saved = { ...existing, ...serializeSettings(validated) };
+    writeSettingsFile(this.userPath, saved);
+
+    this.user = saved as RawSettings;
+    this.session = { ...this.session, ...validated };
+    this.fileAndSessionLegacyInputs = this.fileAndSessionLegacyInputs.filter(
+      (input) => input !== this.legacyUserPath,
+    );
     this.recompute();
+    appendSessionOverrides(this.host, this.session);
     this.apply();
+    return this.userPath;
   }
 
   public status(): SessionStatus {

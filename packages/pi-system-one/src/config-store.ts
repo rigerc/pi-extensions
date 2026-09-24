@@ -84,14 +84,6 @@ export function writeSettingsFile(filePath: string, settings: Record<string, unk
   fs.renameSync(tempPath, filePath);
 }
 
-export function deleteSettingsFile(filePath: string): void {
-  try {
-    fs.rmSync(filePath, { force: true });
-  } catch {
-    // Nothing to remove.
-  }
-}
-
 /**
  * The last config entry in the session branch wins wholesale: a later entry replaces
  * the override set rather than merging, so writing `{}` clears every override.

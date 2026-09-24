@@ -633,6 +633,7 @@ export class SystemOneClient {
   private apiKey: string | null = null;
   private providerOverrides: ProviderOverrides = {};
   private lastLayaHealth?: LayaHealthStatus;
+  private healthStatusListener?: (configurationChanged: boolean) => void;
   public stats: SystemOneSessionStats = {
     requestsCount: 0,
     totalTokens: 0,
@@ -644,8 +645,15 @@ export class SystemOneClient {
    * points at OpenRouter also infers the provider, matching env behaviour.
    */
   public setProviderOverrides(overrides: ProviderOverrides): void {
+    const previousEndpoint = this.getLayaEndpoint();
     this.providerOverrides = overrides ?? {};
     this.clients.clear();
+    if (this.getLayaEndpoint() !== previousEndpoint) this.lastLayaHealth = undefined;
+    this.healthStatusListener?.(true);
+  }
+
+  public setHealthStatusListener(listener: ((configurationChanged: boolean) => void) | undefined): void {
+    this.healthStatusListener = listener;
   }
 
   /** Resolved provider, honouring layered settings and an in-session key override. */
@@ -723,12 +731,23 @@ export class SystemOneClient {
         throw new Error('Unexpected health response (invalid loaded models or device)');
       }
       const result: LayaHealthResult = { endpoint, loaded, device, checkedAt: Date.now() };
-      this.lastLayaHealth = { endpoint, checkedAt: result.checkedAt, result };
+      if (this.getProviderInfo()?.provider === 'laya' && this.getLayaEndpoint() === endpoint) {
+        this.lastLayaHealth = { endpoint, checkedAt: result.checkedAt, result };
+        this.healthStatusListener?.(false);
+      }
       return result;
     } catch (error) {
-      this.lastLayaHealth = { endpoint, checkedAt: Date.now(), error: errorMessage(error) };
+      if (this.getProviderInfo()?.provider === 'laya' && this.getLayaEndpoint() === endpoint) {
+        this.lastLayaHealth = { endpoint, checkedAt: Date.now(), error: errorMessage(error) };
+        this.healthStatusListener?.(false);
+      }
       throw error;
     }
+  }
+
+  private getLayaEndpoint(): string | null {
+    const config = this.getConfig();
+    return config?.provider === 'laya' ? `${config.baseURL.replace(/\/+$/, '')}/health` : null;
   }
 
   public isConfigured(): boolean {

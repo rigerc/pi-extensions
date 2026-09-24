@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import type { SystemOneClient } from '../src/system-one.js';
 import { PROVIDER_VALUES, SETTING_SPECS } from '../src/config.js';
 import {
-  ChoiceSubmenu,
   InfoSubmenu,
   LayaHealthSubmenu,
   TextInputSubmenu,
@@ -12,7 +11,16 @@ import {
 } from '../src/settings-ui.js';
 import { makeSettingsHarness } from './settings-harness.js';
 
-const UI = { accent: (s: string) => s, dim: (s: string) => s, bold: (s: string) => s };
+const plain = (s: string) => s;
+const UI = {
+  accent: plain,
+  dim: plain,
+  muted: plain,
+  success: plain,
+  warning: plain,
+  error: plain,
+  bold: plain,
+};
 const ENTER = '\r';
 const ESCAPE = '\x1b';
 
@@ -45,14 +53,7 @@ test('test_rows_are_generated_from_the_registry_for_every_group', () => {
     }
     assert.deepEqual(
       ids.filter((id) => !SETTING_SPECS.some((s) => s.key === id)),
-      [
-        'status.apiKey',
-        'status.session',
-        'action.layaHealth',
-        'action.test',
-        'action.persist',
-        'action.reset',
-      ],
+      ['status.apiKey', 'status.session', 'action.layaHealth', 'action.test'],
     );
 
     for (const item of items) {
@@ -181,50 +182,6 @@ test('test_text_input_submenu_allows_empty_for_base_url', () => {
   assert.equal(saved, '', 'empty is a meaningful value for base URL');
 });
 
-test('test_choice_submenu_reports_the_choice_without_changing_the_row_value', () => {
-  const chosen: string[] = [];
-  let closed = 0;
-  const submenu = new ChoiceSubmenu(
-    'Reset',
-    [
-      { value: 'session', label: 'Clear session overrides' },
-      { value: 'files', label: 'Clear everything' },
-    ],
-    UI,
-    (value) => chosen.push(value),
-    () => {
-      closed += 1;
-    },
-  );
-
-  submenu.handleInput(ENTER);
-  assert.deepEqual(chosen, ['session'], 'first choice is the default');
-  assert.equal(closed, 1);
-
-  submenu.handleInput(ESCAPE);
-  assert.deepEqual(chosen, ['session'], 'escape performs no action');
-  assert.equal(closed, 2);
-});
-
-test('test_choice_submenu_navigates_with_arrows_and_wraps', () => {
-  const chosen: string[] = [];
-  const submenu = new ChoiceSubmenu(
-    'Persist',
-    [
-      { value: 'user', label: 'user' },
-      { value: 'project', label: 'project' },
-      { value: 'both', label: 'both' },
-    ],
-    UI,
-    (value) => chosen.push(value),
-    () => {},
-  );
-
-  submenu.handleInput('\x1b[A'); // up from index 0 wraps to the last
-  submenu.handleInput(ENTER);
-  assert.deepEqual(chosen, ['both']);
-});
-
 test('test_info_submenu_closes_on_enter_or_escape', () => {
   let closed = 0;
   const submenu = new InfoSubmenu('Status', ['  requests: 0'], () => {
@@ -318,5 +275,7 @@ test('test_settings_ui_theme_adapts_a_pi_theme', () => {
   const ui = settingsUiTheme(piTheme);
   assert.equal(ui.accent('x'), '<accent>x');
   assert.equal(ui.dim('x'), '<dim>x');
+  assert.equal(ui.success('x'), '<success>x');
+  assert.equal(ui.error('x'), '<error>x');
   assert.equal(ui.bold('x'), '*x*');
 });

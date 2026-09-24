@@ -86,16 +86,20 @@ test('test_canonical_session_entries_win_over_legacy_entries', () => {
   }
 });
 
-test('test_persisting_legacy_file_settings_writes_only_the_canonical_file', () => {
+test('test_saving_migrates_legacy_user_values_without_touching_the_legacy_file', () => {
   const h = makeSettingsHarness({ legacyUser: { provider: 'typesafe' } });
   try {
     h.service.init();
-    h.service.set('toolGuard', true);
     const before = fs.readFileSync(h.legacyPathFor('user'), 'utf8');
-
-    assert.deepEqual(h.service.persistToFile('user'), [h.pathFor('user')]);
+    h.service.set('toolGuard', true);
     assert.ok(fs.existsSync(h.pathFor('user')));
+    assert.deepEqual(JSON.parse(fs.readFileSync(h.pathFor('user'), 'utf8')), {
+      version: 1,
+      provider: 'typesafe',
+      toolGuard: true,
+    });
     assert.equal(fs.readFileSync(h.legacyPathFor('user'), 'utf8'), before);
+    assert.deepEqual(h.service.legacyInputs, []);
   } finally {
     h.cleanup();
   }
@@ -140,7 +144,7 @@ test('test_init_applies_settings_to_live_modes_tools_and_provider', () => {
   }
 });
 
-test('test_set_writes_a_session_entry_and_applies_immediately', () => {
+test('test_set_saves_to_user_file_and_applies_immediately', () => {
   const h = makeSettingsHarness();
   try {
     h.service.init();
@@ -150,6 +154,7 @@ test('test_set_writes_a_session_entry_and_applies_immediately', () => {
     assert.equal(h.modes.toolGuard.enabled, true);
     assert.equal(h.service.values.toolGuard, true);
     assert.equal(h.service.provenance.toolGuard, 'session');
+    assert.equal(JSON.parse(fs.readFileSync(h.pathFor('user'), 'utf8')).toolGuard, true);
 
     assert.equal(h.entries.length, 1);
     assert.equal(h.entries[0]!.customType, SESSION_ENTRY_TYPE);
@@ -158,6 +163,7 @@ test('test_set_writes_a_session_entry_and_applies_immediately', () => {
     // Later entries replace the whole override set, so both keys must be present.
     assert.equal(h.service.set('autoModel', true), true);
     assert.deepEqual(h.entries.at(-1)!.data, { toolGuard: true, autoModel: true });
+    assert.equal(JSON.parse(fs.readFileSync(h.pathFor('user'), 'utf8')).autoModel, true);
   } finally {
     h.cleanup();
   }
@@ -173,6 +179,7 @@ test('test_set_rejects_invalid_values_without_touching_state', () => {
 
     assert.equal(h.entries.length, 0, 'nothing persisted for rejected values');
     assert.equal(h.service.values.provider, 'auto');
+    assert.ok(!fs.existsSync(h.pathFor('user')));
   } finally {
     h.cleanup();
   }
@@ -223,87 +230,59 @@ test('test_jev_tools_grant_adds_and_removes_only_the_extension_tools', () => {
   }
 });
 
-test('test_persist_to_file_writes_a_versioned_file_with_no_secret_material', () => {
-  const h = makeSettingsHarness();
+test('test_batch_save_writes_only_the_user_file_and_preserves_layer_priority', () => {
+  const h = makeSettingsHarness({
+    user: { provider: 'typesafe', autoSkillRouting: true },
+    project: { model: 'project-model' },
+    env: { PI_SYSTEM_ONE_AUTO_MODEL: '1' },
+  });
+  h.setFlag('system-one-compact', true);
   try {
     h.service.init();
-    h.service.set('model', 'typesafe/jev-1.13');
-    h.service.set('provider', 'openrouter');
+    const projectBefore = fs.readFileSync(h.pathFor('project'), 'utf8');
+    assert.equal(
+      h.service.saveUserSettings({ model: 'saved-model', toolGuard: true, compaction: false }),
+      h.pathFor('user'),
+    );
+    assert.deepEqual(JSON.parse(fs.readFileSync(h.pathFor('user'), 'utf8')), {
+      version: 1,
+      provider: 'typesafe',
+      autoSkillRouting: true,
+      model: 'saved-model',
+      toolGuard: true,
+      compaction: false,
+    });
+    assert.equal(fs.readFileSync(h.pathFor('project'), 'utf8'), projectBefore);
+    assert.equal(h.service.values.model, 'saved-model', 'saved value applies this session');
+    assert.equal(h.service.values.compaction, false, 'saved value wins this session');
+    assert.equal(h.entries.length, 1, 'one batch writes one session entry');
 
-    const written = h.service.persistToFile('both');
-    assert.deepEqual(written, [h.pathFor('user'), h.pathFor('project')]);
-
-    for (const scope of ['user', 'project'] as const) {
-      const raw = JSON.parse(fs.readFileSync(h.pathFor(scope), 'utf8'));
-      assert.equal(raw.version, 1, `${scope} file carries a schema version`);
-      assert.equal(raw.model, 'typesafe/jev-1.13');
-      assert.equal(raw.provider, 'openrouter');
-
-      const text = JSON.stringify(raw).toLowerCase();
-      for (const forbidden of ['apikey', 'api_key', 'secret', 'token', 'sk-or', 'ts_']) {
-        assert.ok(!text.includes(forbidden), `${scope} file must not contain "${forbidden}"`);
-      }
-    }
+    h.service.init();
+    assert.equal(h.service.values.model, 'project-model', 'project still wins next session');
+    assert.equal(h.service.values.toolGuard, true, 'user-only value survives restart');
+    assert.equal(h.service.values.autoModel, true, 'environment retains priority');
+    assert.equal(h.service.values.compaction, true, 'flag retains priority');
   } finally {
     h.cleanup();
   }
 });
 
-for (const scope of ['user', 'project', 'both'] as const) {
-  test(`persisting to ${scope} merges overrides into each file without losing unrelated settings`, () => {
-    const original = {
-      user: { version: 1, provider: 'openrouter', autoToolRouting: true, toolGuard: true },
-      project: { version: 1, model: 'project-model', autoSkillRouting: true, toolGuard: true },
-    };
-    const h = makeSettingsHarness({
-      user: original.user,
-      project: original.project,
-      env: { PI_SYSTEM_ONE_AUTO_MODEL: '1' },
-    });
-    try {
-      h.service.init();
-      h.service.set('toolGuard', false);
-      const targets = scope === 'both' ? (['user', 'project'] as const) : [scope];
-      assert.deepEqual(
-        h.service.persistToFile(scope),
-        targets.map((target) => h.pathFor(target)),
-      );
-
-      for (const target of ['user', 'project'] as const) {
-        const saved = JSON.parse(fs.readFileSync(h.pathFor(target), 'utf8'));
-        assert.deepEqual(saved, {
-          ...original[target],
-          ...(scope === 'both' || scope === target ? { toolGuard: false } : {}),
-        });
-      }
-
-      h.service.init();
-      assert.equal(h.service.values.provider, 'openrouter');
-      assert.equal(h.service.values.model, 'project-model');
-      assert.equal(h.service.values.autoToolRouting, true);
-      assert.equal(h.service.values.autoSkillRouting, true);
-    } finally {
-      h.cleanup();
-    }
-  });
-}
-
-test('persisting merges the latest file contents and excludes unknown secret fields', () => {
+test('test_save_merges_latest_user_file_and_excludes_secret_fields', () => {
   const h = makeSettingsHarness({ user: { provider: 'typesafe' } });
   try {
     h.service.init();
-    h.service.set('toolGuard', true);
     fs.writeFileSync(
       h.pathFor('user'),
       JSON.stringify({
         version: 1,
         provider: 'openrouter',
         model: 'updated-model',
+        autoToolRouting: 'maybe',
         apiKey: 'test-secret',
       }),
     );
 
-    h.service.persistToFile('user');
+    h.service.saveUserSettings({ toolGuard: true });
     assert.deepEqual(JSON.parse(fs.readFileSync(h.pathFor('user'), 'utf8')), {
       version: 1,
       provider: 'openrouter',
@@ -315,45 +294,32 @@ test('persisting merges the latest file contents and excludes unknown secret fie
   }
 });
 
-test('test_persist_to_file_is_a_no_op_when_there_are_no_session_overrides', () => {
+test('test_empty_or_invalid_batch_does_not_write_a_file', () => {
   const h = makeSettingsHarness();
   try {
     h.service.init();
-    assert.deepEqual(h.service.persistToFile('both'), []);
+    assert.equal(h.service.saveUserSettings({}), undefined);
+    assert.throws(() => h.service.saveUserSettings({ model: '' }), /Invalid value/);
+    assert.throws(
+      () => h.service.saveUserSettings({ toolGuard: true, apiKey: 'secret' } as never),
+      /Unknown setting/,
+    );
     assert.ok(!fs.existsSync(h.pathFor('user')));
-    assert.ok(!fs.existsSync(h.pathFor('project')));
+    assert.equal(h.entries.length, 0);
   } finally {
     h.cleanup();
   }
 });
 
-test('test_reset_clears_session_overrides_and_optionally_deletes_files', () => {
+test('test_failed_user_write_leaves_live_settings_unchanged', () => {
   const h = makeSettingsHarness();
   try {
     h.service.init();
-    h.service.set('toolGuard', true);
-    h.service.persistToFile('both');
-
-    h.service.resetToDefaults(false);
-    assert.deepEqual(h.entries.at(-1)!.data, {}, 'an empty entry clears the override set');
-    assert.ok(fs.existsSync(h.pathFor('user')), 'files survive a session-only reset');
-    assert.equal(
-      h.service.values.toolGuard,
-      true,
-      'the file layer still supplies the persisted value',
-    );
-    assert.equal(
-      h.service.provenance.toolGuard,
-      'project',
-      'reloaded from disk, no longer session',
-    );
-
-    h.service.resetToDefaults(true);
+    fs.mkdirSync(h.pathFor('user'), { recursive: true });
+    assert.throws(() => h.service.saveUserSettings({ toolGuard: true }));
     assert.equal(h.service.values.toolGuard, false);
     assert.equal(h.modes.toolGuard.enabled, false);
-    assert.equal(h.service.provenance.toolGuard, 'default');
-    assert.ok(!fs.existsSync(h.pathFor('user')));
-    assert.ok(!fs.existsSync(h.pathFor('project')));
+    assert.equal(h.entries.length, 0);
   } finally {
     h.cleanup();
   }

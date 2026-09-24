@@ -23,6 +23,32 @@ export function shouldAutoDispatch(prompt: string): boolean {
 
 export default function (pi: ExtensionAPI) {
   const systemOneClient = new SystemOneClient();
+  let healthTimer: ReturnType<typeof setInterval> | undefined;
+  let healthUi: { setStatus(key: string, text: string | undefined): void } | undefined;
+  const renderHealth = () => {
+    if (!healthUi) return;
+    if (systemOneClient.getProviderInfo()?.provider !== 'laya') {
+      healthUi.setStatus('system-one-health', undefined);
+      return;
+    }
+    const health = systemOneClient.getLayaHealthStatus();
+    healthUi.setStatus(
+      'system-one-health',
+      health?.result
+        ? 'Laya endpoint: healthy'
+        : health?.error
+          ? 'Laya endpoint: unavailable'
+          : 'Laya endpoint: checking',
+    );
+  };
+  const probeHealth = async () => {
+    if (systemOneClient.getProviderInfo()?.provider !== 'laya') return;
+    try {
+      await systemOneClient.checkLayaHealth();
+    } catch {
+      // The client caches the failure and renderHealth displays it.
+    }
+  };
   const router = new ToolRouter(pi, systemOneClient);
   const skillRouter = new SkillRouter(pi, systemOneClient);
 
@@ -109,7 +135,18 @@ export default function (pi: ExtensionAPI) {
   );
 
   pi.on('session_start', (_event, ctx) => {
+    healthUi = ctx.ui;
+    systemOneClient.setHealthStatusListener((configurationChanged) => {
+      renderHealth();
+      if (configurationChanged) void probeHealth();
+    });
     settings.init(ctx);
+    renderHealth();
+    if (healthTimer) clearInterval(healthTimer);
+    healthTimer = setInterval(() => {
+      void probeHealth();
+    }, 60_000);
+    healthTimer.unref();
 
     if (!systemOneClient.isConfigured()) {
       ctx.ui.setStatus('system-one', 'system-one: unconfigured');
@@ -122,6 +159,13 @@ export default function (pi: ExtensionAPI) {
     const autoLabel =
       paths.length > 0 ? `system-one: auto (${paths.join('+')})` : 'system-one: ready';
     ctx.ui.setStatus('system-one', autoModel.enabled ? 'system-one: auto-model' : autoLabel);
+  });
+
+  pi.on('session_shutdown', () => {
+    if (healthTimer) clearInterval(healthTimer);
+    healthTimer = undefined;
+    systemOneClient.setHealthStatusListener(undefined);
+    healthUi = undefined;
   });
 
   pi.on('session_before_compact', async (event, ctx) => {

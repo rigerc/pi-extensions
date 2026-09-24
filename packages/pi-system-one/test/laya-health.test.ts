@@ -20,6 +20,8 @@ test('Laya health uses the effective base URL, validates the server, and leaves 
     const address = server.address();
     assert.ok(address && typeof address !== 'string');
     const client = new SystemOneClient();
+    const notifications: boolean[] = [];
+    client.setHealthStatusListener((configurationChanged) => notifications.push(configurationChanged));
     client.setProviderOverrides({
       provider: 'laya',
       baseURL: `http://127.0.0.1:${address.port}/prefix/`,
@@ -31,12 +33,14 @@ test('Laya health uses the effective base URL, validates the server, and leaves 
     assert.deepEqual(healthy.loaded, ['english']);
     assert.equal(healthy.device, 'cuda');
     assert.equal(client.getLayaHealthStatus()?.result, healthy);
+    assert.deepEqual(notifications, [true, false]);
     assert.equal(client.stats.requestsCount, 0);
     assert.equal(client.stats.totalTokens, 0);
 
     status = 503;
     await assert.rejects(client.checkLayaHealth(), /HTTP 503/);
     assert.match(client.getLayaHealthStatus()?.error ?? '', /HTTP 503/);
+    assert.deepEqual(notifications.slice(-1), [false]);
 
     status = 200;
     body = '{invalid';
@@ -54,6 +58,8 @@ test('Laya health uses the effective base URL, validates the server, and leaves 
     client.setProviderOverrides({ provider: 'typesafe' });
     await assert.rejects(client.checkLayaHealth(), /Select Laya/);
     assert.equal(client.getLayaHealthStatus(), null);
+    client.setProviderOverrides({ provider: 'laya', baseURL: `http://127.0.0.1:${address.port}/prefix/` });
+    assert.equal(client.getLayaHealthStatus(), null, 'switching back does not reuse an old result');
   } finally {
     server.close();
     await once(server, 'close');

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
 import { registerSystemOneCommands } from '../src/commands.js';
 import type { SystemOneClient } from '../src/system-one.js';
 import type { ToolRouter } from '../src/router.js';
@@ -381,7 +382,7 @@ test("/system-one enable and /system-one disable only touch this extension's too
   assert.deepEqual(active(), ['read']);
 });
 
-test('/system-one auto on writes through to the settings layer and reports session provenance', async () => {
+test('/system-one auto on saves the user file and reports session provenance', async () => {
   const sh = makeSettingsHarness();
   try {
     sh.service.init();
@@ -396,6 +397,12 @@ test('/system-one auto on writes through to the settings layer and reports sessi
       { autoToolRouting: true, autoSkillRouting: true },
       'session entry persisted',
     );
+    assert.deepEqual(JSON.parse(fs.readFileSync(sh.pathFor('user'), 'utf8')), {
+      version: 1,
+      autoToolRouting: true,
+      autoSkillRouting: true,
+    });
+    assert.ok(!fs.existsSync(sh.pathFor('project')));
 
     calls.length = 0;
     await run('status');
@@ -403,6 +410,21 @@ test('/system-one auto on writes through to the settings layer and reports sessi
     assert.match(status, /Auto tool routing: on \(session\)/);
     assert.match(status, /Auto skill routing: on \(session\)/);
     assert.match(status, /Auto-model: off \(default\)/);
+  } finally {
+    sh.cleanup();
+  }
+});
+
+test('/system-one mode command does not claim success when the user file write fails', async () => {
+  const sh = makeSettingsHarness();
+  try {
+    sh.service.init();
+    fs.mkdirSync(sh.pathFor('user'), { recursive: true });
+    const { run, calls } = harness({}, {}, {}, sh.service);
+    await assert.rejects(run('auto on'));
+    assert.equal(sh.service.values.autoToolRouting, false);
+    assert.equal(sh.entries.length, 0);
+    assert.ok(!calls.some((call) => /auto mode enabled/.test(call.message)));
   } finally {
     sh.cleanup();
   }

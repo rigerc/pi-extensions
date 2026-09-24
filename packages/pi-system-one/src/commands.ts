@@ -37,9 +37,8 @@ export function registerSystemOneCommands(
   const guardMode = toolGuard ?? { enabled: false, setEnabled: () => {} };
 
   /**
-   * Write a mode change through the settings layer when available, so it lands in the
-   * session overrides and stays visible in `/system-one-settings`. Falls back to mutating the
-   * live object directly when commands are registered without a settings service.
+   * Save a mode change to the user file when settings are available. Falls back to
+   * mutating the live object when commands are registered without a settings service.
    */
   const setMode = (key: SettingKey, value: boolean, fallback: () => void): void => {
     if (settings) settings.set(key, value);
@@ -59,8 +58,7 @@ export function registerSystemOneCommands(
   /** `/system-one auto` remains the master switch over both routing paths. */
   const setAutoRouting = (enabled: boolean): void => {
     if (settings) {
-      settings.set('autoToolRouting', enabled);
-      settings.set('autoSkillRouting', enabled);
+      settings.saveUserSettings({ autoToolRouting: enabled, autoSkillRouting: enabled });
     } else {
       auto.setEnabled(enabled);
     }
@@ -403,7 +401,7 @@ export function registerSystemOneCommands(
       if (settings) settings.set('systemOneTools', true);
       else pi.setActiveTools([...new Set([...pi.getActiveTools(), ...SYSTEM_ONE_TOOL_NAMES])]);
       ctx.ui.notify(
-        `System One tools (${SYSTEM_ONE_TOOL_NAMES.join(', ')}) enabled for this session.`,
+        `System One tools (${SYSTEM_ONE_TOOL_NAMES.join(', ')}) enabled${settings ? ' and saved to user settings' : ' for this session'}.`,
         'info',
       );
       return;
@@ -412,7 +410,10 @@ export function registerSystemOneCommands(
     if (sub === 'disable') {
       if (settings) settings.set('systemOneTools', false);
       else pi.setActiveTools(pi.getActiveTools().filter((t) => !isSystemOneTool(t)));
-      ctx.ui.notify('System One tools disabled for this session.', 'info');
+      ctx.ui.notify(
+        `System One tools disabled${settings ? ' and saved to user settings' : ' for this session'}.`,
+        'info',
+      );
       return;
     }
 
