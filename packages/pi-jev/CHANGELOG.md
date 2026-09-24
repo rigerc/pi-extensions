@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Local Laya provider.** Set `PI_JEV_PROVIDER=laya` or choose Laya in `/jev-settings` to use a Jev-compatible server at `http://127.0.0.1:8000`. Keyless loopback operation and optional `LAYA_API_KEY` bearer auth are supported; Laya is explicit-only and never falls back to a hosted provider. Requests use a 48,000-character state cap below Laya's server limit, and status/settings distinguish local no-auth from missing configuration.
 - **Bounded widening pass for routing.** Each route now asks one coverage Noul ("does this list cover the task?"); when the answer says no, exactly one more request judges the candidates the lexical shortlist never saw. This removes the recall ceiling the local term-overlap filter imposed on both routers, where a candidate that shared no token with the prompt was unreachable at any confidence.
 - **Conversation context for routing judgments.** `recent_context` carries the capped tail (1500 chars) of the previous assistant turn, so abbreviated follow-ups ("do the same for X") are judged with the context they depend on instead of the bare prompt.
 - **Deterministic tool-call path check.** Tool-guard verifies path arguments against the filesystem (`fs.existsSync`, resolved against `ctx.cwd`) rather than asking a model whether a path exists. `write` is excluded so creating a file stays valid, and globs/URLs/home-relative values are skipped. Runs with or without a provider, and costs no request.

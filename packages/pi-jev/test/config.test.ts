@@ -36,6 +36,7 @@ test("test_coerce_setting_rejects_invalid_values_instead_of_coercing", () => {
   assert.equal(coerceSetting(model, 42), undefined, "model must be a string");
 
   assert.equal(coerceSetting(provider, "OpenRouter"), "openrouter", "enum values are case-insensitive");
+  assert.equal(coerceSetting(provider, "Laya"), "laya", "the local provider is accepted");
   assert.equal(coerceSetting(provider, "anthropic"), undefined, "unknown provider is rejected");
 
   assert.equal(coerceSetting(baseURL, ""), "", "empty base URL means provider default");

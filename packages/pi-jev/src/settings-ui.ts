@@ -210,11 +210,16 @@ export class TestConnectivitySubmenu {
         `  elapsed:  ${response.elapsedMs}ms`,
       ];
     } catch (error) {
+      const provider = this.jevClient.getProviderInfo();
+      const hint =
+        provider?.provider === "laya"
+          ? "Check that laya-serve is running and the Base URL omits /v1."
+          : "Check the key source and provider in the rows above.";
       this.lines = [
         this.ui.accent("Failed."),
         `  ${(error as { message?: string } | undefined)?.message ?? String(error)}`,
         "",
-        "  Check the key source and provider in the rows above.",
+        `  ${hint}`,
       ];
     }
     requestRender();
@@ -233,8 +238,10 @@ export class TestConnectivitySubmenu {
   }
 }
 
-function maskedKey(origin: string | null): string {
-  return origin ? `•••••••• (from ${origin})` : "(unset)";
+function maskedKey(provider: ReturnType<JevClient["getProviderInfo"]>): string {
+  if (!provider) return "(unset)";
+  if (provider.authMode === "none") return "not required (local endpoint)";
+  return provider.keyOrigin ? `•••••••• (from ${provider.keyOrigin})` : "(unset)";
 }
 
 /** Build the SettingsList rows: one per spec, then read-only status and actions. */
@@ -281,7 +288,7 @@ export function buildSettingItems(
     id: "status.apiKey",
     label: "Provider · API key",
     description: "Read-only. Keys are never written to config files or session entries.",
-    currentValue: maskedKey(provider?.keyOrigin ?? null),
+    currentValue: maskedKey(provider),
     submenu: (_current, done) =>
       new InfoSubmenu(
         ui.accent(ui.bold("Provider · API key")),
@@ -289,9 +296,10 @@ export function buildSettingItems(
           `  provider:     ${provider?.provider ?? "(unconfigured)"}`,
           `  base URL:     ${provider?.baseURL ?? "—"}`,
           `  model:        ${provider?.model ?? "—"}`,
-          `  key source:   ${provider?.keyOrigin ?? "(unset)"}`,
+          `  auth:         ${provider?.authMode === "none" ? "not required (local endpoint)" : "bearer"}`,
+          `  key source:   ${provider?.keyOrigin ?? (provider?.authMode === "none" ? "not required" : "(unset)")}`,
           "",
-          ui.dim("  Set a key via TYPESAFE_API_KEY or OPENROUTER_API_KEY,"),
+          ui.dim("  Set a key via TYPESAFE_API_KEY, OPENROUTER_API_KEY, or LAYA_API_KEY,"),
           ui.dim("  or a file in ~/.pi/agent/secrets/."),
           ui.dim("  Keys are never persisted by this TUI."),
         ],

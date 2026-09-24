@@ -13,3 +13,14 @@ Please include:
 - Any suggested mitigations
 
 We will review reports promptly and publish patches with proper attribution.
+
+## Local Laya endpoints
+
+Bind an unauthenticated Laya server to loopback (`LAYA_HOST=127.0.0.1`). Do not expose
+an unauthenticated `0.0.0.0:8000` listener to a LAN or public network. If remote access
+is intentional, set a strong `LAYA_API_KEY`, restrict access at the network layer, and
+use TLS through a trusted reverse proxy.
+
+Selecting `PI_JEV_PROVIDER=laya` establishes a local-only routing boundary: pi-jev does
+not fall back from Laya to TypeSafe or OpenRouter. API keys are read only from the
+environment or Pi's secret directory and are never persisted in settings or sessions.

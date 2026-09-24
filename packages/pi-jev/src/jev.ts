@@ -14,8 +14,18 @@ import type {
 
 export type { JevProvider };
 
-/** Bare id valid on TypeSafe and mapped to `~typesafe/jev-latest` by OpenRouter. */
+/** Bare id valid on hosted Jev; Laya treats an unknown Jev id as auto-routing. */
 export const DEFAULT_MODEL = "jev-latest";
+
+/** Safely below laya-serve's 50,000-character state limit. */
+export const LAYA_MAX_STATE_CHARS = 48_000;
+
+/**
+ * @typesafe-ai/sdk requires a non-empty key and always sends a bearer header. Laya
+ * ignores that header when LAYA_API_KEY is unset, so keep this transport-only value
+ * private and never expose it through config, status, persistence, or logs.
+ */
+const LOCAL_SDK_PLACEHOLDER = "pi-jev-local-no-auth";
 
 export type ApiKeySource = "env" | "file";
 
@@ -28,8 +38,9 @@ export interface JevProviderDefinition {
   model: string;
   /** Legacy provider-specific model env var (TypeSafe only). */
   modelEnv?: string;
-  keyEnv: string;
-  secretFile: string;
+  keyEnv?: string;
+  secretFile?: string;
+  auth: "required" | "optional";
 }
 
 export const JEV_PROVIDERS: Record<JevProvider, JevProviderDefinition> = {
@@ -41,6 +52,7 @@ export const JEV_PROVIDERS: Record<JevProvider, JevProviderDefinition> = {
     modelEnv: "TYPESAFE_DEFAULT_MODEL",
     keyEnv: "TYPESAFE_API_KEY",
     secretFile: "typesafe_api_key",
+    auth: "required",
   },
   openrouter: {
     label: "OpenRouter",
@@ -48,6 +60,15 @@ export const JEV_PROVIDERS: Record<JevProvider, JevProviderDefinition> = {
     model: DEFAULT_MODEL,
     keyEnv: "OPENROUTER_API_KEY",
     secretFile: "openrouter_api_key",
+    auth: "required",
+  },
+  laya: {
+    label: "Laya (local)",
+    baseURL: "http://127.0.0.1:8000",
+    model: DEFAULT_MODEL,
+    keyEnv: "LAYA_API_KEY",
+    secretFile: "laya_api_key",
+    auth: "optional",
   },
 };
 
@@ -55,11 +76,13 @@ export const JEV_PROVIDERS: Record<JevProvider, JevProviderDefinition> = {
 export interface JevProviderConfig {
   provider: JevProvider;
   label: string;
-  apiKey: string;
+  apiKey?: string;
   baseURL: string;
   model: string;
   /** Where the key came from, e.g. `$OPENROUTER_API_KEY`. */
-  keyOrigin: string;
+  keyOrigin: string | null;
+  /** Whether requests use a user-configured bearer credential. */
+  authMode: "none" | "bearer";
 }
 
 /** Public, secret-free view of the active provider for `/jev status`. */
@@ -68,7 +91,8 @@ export interface JevProviderInfo {
   label: string;
   baseURL: string;
   model: string;
-  keyOrigin: string;
+  keyOrigin: string | null;
+  authMode: "none" | "bearer";
 }
 
 /** Layered-config overrides pushed in by the settings service. */
@@ -94,6 +118,7 @@ export const JEV_ENV = {
   baseURL: BASE_URL_OVERRIDE_ENV,
   model: MODEL_OVERRIDE_ENV,
   secretsDir: SECRETS_DIR_ENV,
+  layaApiKey: "LAYA_API_KEY",
 } as const;
 
 /** Secrets live next to Pi's own store by default; override for custom layouts and tests. */
@@ -118,10 +143,12 @@ function readSecretFile(fileName: string): { key: string; origin: string } | nul
   return null;
 }
 
-/** `typesafe` / `openrouter` when forced; `auto` (also for unset or unknown values). */
+/** A known explicit provider, or `auto` for unset/unknown values. */
 export function parseProvider(value: string | null | undefined): JevProvider | "auto" {
   const normalized = value?.trim().toLowerCase();
-  if (normalized === "typesafe" || normalized === "openrouter") return normalized;
+  if (normalized === "typesafe" || normalized === "openrouter" || normalized === "laya") {
+    return normalized;
+  }
   return "auto";
 }
 
@@ -136,6 +163,13 @@ export function inferProviderFromBaseURL(baseURL: string | null | undefined): Je
  * provider is rejected, so one provider's key is never sent to the other's host.
  */
 function overrideAppliesTo(baseURL: string | null | undefined, provider: JevProvider): boolean {
+  if (
+    provider === "laya" &&
+    baseURL &&
+    /(?:openrouter\.ai|(?:^|\.)typesafe\.ai)(?:[/:]|$)/i.test(baseURL)
+  ) {
+    return false;
+  }
   const inferred = inferProviderFromBaseURL(baseURL);
   return inferred === null || inferred === provider;
 }
@@ -151,7 +185,11 @@ function applyOverrides(config: JevProviderConfig, overrides: ProviderOverrides)
   };
 }
 
-function buildConfig(provider: JevProvider, apiKey: string, keyOrigin: string): JevProviderConfig {
+function buildConfig(
+  provider: JevProvider,
+  apiKey?: string,
+  keyOrigin: string | null = null
+): JevProviderConfig {
   const def = JEV_PROVIDERS[provider];
   const legacyBaseURL = def.baseURLEnv ? readEnv(def.baseURLEnv) : null;
   const legacyModel = def.modelEnv ? readEnv(def.modelEnv) : null;
@@ -166,19 +204,20 @@ function buildConfig(provider: JevProvider, apiKey: string, keyOrigin: string): 
       def.baseURL,
     model: readEnv(MODEL_OVERRIDE_ENV) ?? legacyModel ?? def.model,
     keyOrigin,
+    authMode: apiKey ? "bearer" : "none",
   };
 }
 
 /** Credentials for one provider: its env var first, then its secret file. */
 export function resolveProviderConfig(provider: JevProvider): JevProviderConfig | null {
   const def = JEV_PROVIDERS[provider];
-  const envKey = readEnv(def.keyEnv);
+  const envKey = def.keyEnv ? readEnv(def.keyEnv) : null;
   if (envKey) return buildConfig(provider, envKey, `$${def.keyEnv}`);
 
-  const fileKey = readSecretFile(def.secretFile);
+  const fileKey = def.secretFile ? readSecretFile(def.secretFile) : null;
   if (fileKey) return buildConfig(provider, fileKey.key, fileKey.origin);
 
-  return null;
+  return def.auth === "optional" ? buildConfig(provider) : null;
 }
 
 /**
@@ -205,7 +244,7 @@ function resolveOverrideConfig(): JevProviderConfig | null {
 /**
  * Resolve the primary provider, first match wins:
  * 1. `PI_JEV_API_KEY` (+ optional `PI_JEV_PROVIDER` / `PI_JEV_BASE_URL` / `PI_JEV_MODEL`)
- * 2. forced provider via `PI_JEV_PROVIDER=typesafe|openrouter`
+ * 2. forced provider via `PI_JEV_PROVIDER=typesafe|openrouter|laya`
  * 3. auto-detect: `TYPESAFE_API_KEY` then `OPENROUTER_API_KEY` (env, then secret file)
  */
 export function resolveJevProvider(): JevProviderConfig | null {
@@ -223,11 +262,12 @@ export function resolveJevProvider(): JevProviderConfig | null {
   return resolveProviderConfig("typesafe") ?? resolveProviderConfig("openrouter");
 }
 
-/** The other provider, when it also has credentials, for one-shot auth fallback. */
+/** The other hosted provider, when configured. Local Laya never crosses the cloud boundary. */
 export function resolveFallbackProvider(
   primary: JevProvider,
   overrides: ProviderOverrides = {}
 ): JevProviderConfig | null {
+  if (primary === "laya") return null;
   const other: JevProvider = primary === "typesafe" ? "openrouter" : "typesafe";
   const config = resolveProviderConfigFor(other);
   return config ? applyOverrides(config, overrides) : null;
@@ -236,7 +276,7 @@ export function resolveFallbackProvider(
 /** Backwards-compatible key lookup used by older callers. */
 export function resolveApiKeySource(): { key: string; source: ApiKeySource; origin: string } | null {
   const config = resolveJevProvider();
-  if (!config) return null;
+  if (!config?.apiKey || !config.keyOrigin) return null;
   return {
     key: config.apiKey,
     source: config.keyOrigin.startsWith("$") ? "env" : "file",
@@ -272,7 +312,8 @@ export function describeUnconfigured(): string {
     "No Jev provider is configured.",
     "Set TYPESAFE_API_KEY (TypeSafe) or OPENROUTER_API_KEY (OpenRouter),",
     `or write ~/.pi/agent/secrets/{${JEV_PROVIDERS.typesafe.secretFile},${JEV_PROVIDERS.openrouter.secretFile}}.`,
-    `${API_KEY_OVERRIDE_ENV} with ${BASE_URL_OVERRIDE_ENV} overrides both.`,
+    `For local Laya, set ${PROVIDER_ENV}=laya and run laya-serve.`,
+    `${API_KEY_OVERRIDE_ENV} is the generic bearer-token override.`,
   ].join(" ");
 }
 
@@ -548,7 +589,7 @@ export class JevClient {
     const requested = forced ?? inferred;
 
     // A concrete provider chosen through layered settings must still respect
-    // PI_JEV_API_KEY, which outranks both providers' own credentials. With no provider
+    // PI_JEV_API_KEY, which outranks provider-specific credentials. With no provider
     // selected, the full env/secret resolution order already handles the override.
     let base = requested ? resolveProviderConfigFor(requested) : resolveJevProvider();
 
@@ -562,7 +603,12 @@ export class JevClient {
     const config = applyOverrides(base, this.providerOverrides);
 
     if (this.apiKey) {
-      return { ...config, apiKey: this.apiKey, keyOrigin: "set in-session" };
+      return {
+        ...config,
+        apiKey: this.apiKey,
+        keyOrigin: "set in-session",
+        authMode: "bearer",
+      };
     }
     return config;
   }
@@ -576,6 +622,7 @@ export class JevClient {
       baseURL: config.baseURL,
       model: config.model,
       keyOrigin: config.keyOrigin,
+      authMode: config.authMode,
     };
   }
 
@@ -597,7 +644,7 @@ export class JevClient {
     let client = this.clients.get(config.provider);
     if (!client) {
       client = new TypeSafeClient({
-        apiKey: config.apiKey,
+        apiKey: config.apiKey ?? LOCAL_SDK_PLACEHOLDER,
         baseURL: config.baseURL,
         defaultModel: config.model,
         defaultHeaders:
@@ -633,7 +680,10 @@ export class JevClient {
       }
     }
 
-    const capped = capState(request.state);
+    const capped = capState(
+      request.state,
+      primary.provider === "laya" ? LAYA_MAX_STATE_CHARS : MAX_STATE_CHARS
+    );
     // The API accepts a plain string state, so pass it through unwrapped.
     const statePayload: any = capped.value;
 
@@ -654,7 +704,7 @@ export class JevClient {
     try {
       response = await this.getClient(active).systemOne(body, { signal });
     } catch (error) {
-      // Retry the other provider once, and only for provider-scoped failures.
+      // Retry the other hosted provider once, and only for provider-scoped failures.
       const secondary = isProviderFallbackError(error)
         ? resolveFallbackProvider(active.provider, this.providerOverrides)
         : null;

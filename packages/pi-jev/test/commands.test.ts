@@ -43,6 +43,7 @@ function harness(
       baseURL: "https://api.typesafe.ai",
       model: "jev-latest",
       keyOrigin: "~/.pi/agent/secrets/typesafe_api_key",
+      authMode: "bearer",
     }),
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
     evaluate: async (request: any) => ({
@@ -197,6 +198,7 @@ test("/jev status reports config origin and excludes own tools from the routable
   const status = calls.at(-1)!.message;
   assert.match(status, /Configured: Yes \(from ~\/\.pi\/agent\/secrets\/typesafe_api_key\)/);
   assert.match(status, /Provider: typesafe \(https:\/\/api\.typesafe\.ai\)/);
+  assert.match(status, /Authentication: bearer/);
   assert.match(status, /Model: jev-latest/);
   // active: read. bash is routable; the three jev tools are ours and must not count.
   assert.match(status, /Active tools: 1 \/ Available: 5 \(1 routable\)/);
@@ -211,6 +213,7 @@ test("/jev status reports the active provider, session cost and cross-provider f
       baseURL: "https://openrouter.ai/api",
       model: "jev-latest",
       keyOrigin: "$OPENROUTER_API_KEY",
+      authMode: "bearer",
     }),
     stats: {
       requestsCount: 3,
@@ -230,6 +233,28 @@ test("/jev status reports the active provider, session cost and cross-provider f
   assert.match(status, /Total tokens used: 1234/);
   assert.match(status, /Cost \(session\): \$0\.004200/);
   assert.match(status, /Fallback: typesafe → openrouter \(401 unauthorized\)/);
+});
+
+test("/jev status treats keyless local Laya as configured", async () => {
+  const { run, calls } = harness({}, {}, {
+    isConfigured: () => true,
+    getKeyOrigin: () => null,
+    getProviderInfo: () => ({
+      provider: "laya",
+      label: "Laya (local)",
+      baseURL: "http://127.0.0.1:8000",
+      model: "jev-latest",
+      keyOrigin: null,
+      authMode: "none",
+    }),
+  });
+
+  await run("status");
+  const status = calls.at(-1)!.message;
+  assert.match(status, /Configured: Yes \(local endpoint; no key required\)/);
+  assert.match(status, /Provider: laya \(http:\/\/127\.0\.0\.1:8000\)/);
+  assert.match(status, /Authentication: not required/);
+  assert.doesNotMatch(status, /Auto mode inactive/);
 });
 
 test("/jev enable and /jev disable only touch this extension's tools", async () => {

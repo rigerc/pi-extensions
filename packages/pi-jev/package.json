@@ -1,7 +1,7 @@
 {
   "name": "@rigerc/pi-jev",
   "version": "0.7.0",
-  "description": "Semantic tool routing and typed System One decisions for the Pi coding agent using Jev via TypeSafe or OpenRouter",
+  "description": "Semantic tool routing and typed System One decisions for Pi using Jev via TypeSafe, OpenRouter, or local Laya",
   "type": "module",
   "main": "extensions/index.ts",
   "bin": {
@@ -14,6 +14,8 @@
     "pi-coding-agent",
     "typesafe",
     "openrouter",
+    "laya",
+    "local-ai",
     "jev",
     "system-one",
     "tool-router"

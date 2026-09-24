@@ -1,6 +1,6 @@
 # pi-jev
 
-Semantic tool routing and typed decisions for the [Pi coding agent](https://pi.dev) powered by [TypeSafe](https://typesafe.ai) Jev (System One), served either TypeSafe-direct or through [OpenRouter](https://openrouter.ai/typesafe).
+Semantic tool routing and typed decisions for the [Pi coding agent](https://pi.dev) powered by Jev (System One), served by [TypeSafe](https://typesafe.ai), [OpenRouter](https://openrouter.ai/typesafe), or a local [Laya](https://github.com/NandhaKishorM/laya) server.
 
 ## Features
 
@@ -15,7 +15,7 @@ Semantic tool routing and typed decisions for the [Pi coding agent](https://pi.d
 - **Agent Orchestration & Typed Agent**: `/jev agents <task>` dispatches `pi-subagents` orchestration; register `agent: "jev"` in workflows for instant sub-second typed judgments without LLM overhead.
 - **Post-Run Gate Check (`jev-gate` CLI)**: Fast binary for subagent `gate` parameters (`npx pi-jev-gate -c "criteria"`). Checks git diff / output and exits 0 on pass or 1 on fail.
 - **On-Demand & Safe**: Runs when called. No unsolicited per-turn API token costs. Fails closed safely: if Jev is unreachable or unconfigured, tool routing does not blindly activate unjudged tools and reports zero confidence on keyword fallbacks; the tool-call guard's existence check is deterministic and still applies without a provider.
-- **Cost Clarity**: Tool routing (`jev_find_tools`, auto tool routing), skill discovery (`jev_find_skill`, auto skill routing), evaluations (`jev_evaluate`), Jev subagents (`agent: "jev"`), and gate checks (`pi-jev-gate`) each consume a Jev System One request — auto mode asks every enabled routing question in one shared request, so both paths on still costs one request per prompt. A widening pass adds one more request, and only when Jev answers that the first shortlist was incomplete. A tool call blocked by the deterministic path check costs nothing. Heuristic fast-paths like `/jev auto-model` and topology fallback classify locally without spending Jev requests. Works against either TypeSafe-direct or OpenRouter (session token usage is tracked for both, and OpenRouter cost is reported when available).
+- **Cost Clarity**: Tool routing (`jev_find_tools`, auto tool routing), skill discovery (`jev_find_skill`, auto skill routing), evaluations (`jev_evaluate`), Jev subagents (`agent: "jev"`), and gate checks (`pi-jev-gate`) each consume a Jev System One request — auto mode asks every enabled routing question in one shared request, so both paths on still costs one request per prompt. A widening pass adds one more request, and only when Jev answers that the first shortlist was incomplete. A tool call blocked by the deterministic path check costs nothing. Heuristic fast-paths like `/jev auto-model` and topology fallback classify locally without spending Jev requests. Session token usage is tracked for every provider; OpenRouter cost is reported when available, while local Laya has no API charge.
 
 ## Installation
 
@@ -31,14 +31,15 @@ pi install git:github.com/TheoOliveira/pi-jev
 
 ## Setup
 
-pi-jev talks to a Jev System One endpoint, either TypeSafe-direct or through
-[OpenRouter](https://openrouter.ai/typesafe). Set whichever key you have and the
-provider is detected automatically.
+pi-jev talks to a Jev-compatible System One endpoint. TypeSafe and OpenRouter are
+detected automatically from their credentials. Local Laya is selected explicitly so
+choosing local execution can never silently route a failed request to the cloud.
 
 | Provider | API key | API root (`baseURL`, SDK appends `/v1/systemone`) |
 | --- | --- | --- |
 | TypeSafe (default) | `TYPESAFE_API_KEY=ts_...` | `https://api.typesafe.ai` |
 | OpenRouter | `OPENROUTER_API_KEY=sk-or-...` | `https://openrouter.ai/api` |
+| Laya (local) | Not required; optional `LAYA_API_KEY` | `http://127.0.0.1:8000` |
 
 ```bash
 export TYPESAFE_API_KEY=ts_...        # TypeSafe-direct
@@ -55,37 +56,74 @@ echo "ts_..." > ~/.pi/agent/secrets/typesafe_api_key
 echo "sk-or-..." > ~/.pi/agent/secrets/openrouter_api_key
 ```
 
+### Local Laya
+
+Install Laya's server extra, bind it to loopback, and then explicitly select it in the
+Pi process:
+
+```bash
+python -m pip install "laya[serve]"
+LAYA_HOST=127.0.0.1 LAYA_DEVICE=cuda LAYA_PRELOAD=1 laya-serve
+
+export PI_JEV_PROVIDER=laya
+```
+
+The server process owns checkpoint downloads, device selection, preload policy, logs,
+and restarts; pi-jev only calls its Jev-compatible API. Do not include `/v1` in
+`PI_JEV_BASE_URL` because the SDK appends `/v1/systemone`.
+
+`jev-latest` lets Laya route automatically. Set `PI_JEV_MODEL=english`,
+`multilingual`, or `typed-decisions` to pin a checkpoint. Laya's checkpoints have
+smaller effective context windows than hosted Jev, so prefer compact state and test
+large routing workloads locally. pi-jev also keeps Laya state below the server's
+50,000-character limit.
+
+Authentication is optional on loopback. To require it, give the server and Pi process
+the same token:
+
+```bash
+export LAYA_API_KEY="replace-with-a-random-token"
+LAYA_HOST=127.0.0.1 laya-serve
+export PI_JEV_PROVIDER=laya
+```
+
+You may instead store the Pi-side token in
+`~/.pi/agent/secrets/laya_api_key`. Run `/jev status` and `/jev test` to verify the
+selected endpoint. A Laya failure is surfaced to the caller and never retried against
+TypeSafe or OpenRouter.
+
 ### Provider configuration
 
 Resolution order, first match wins:
 
 1. `PI_JEV_API_KEY` (with optional `PI_JEV_PROVIDER`, `PI_JEV_BASE_URL`, `PI_JEV_MODEL`)
-2. `PI_JEV_PROVIDER=typesafe|openrouter` — forces that provider
+2. `PI_JEV_PROVIDER=typesafe|openrouter|laya` — forces that provider; Laya may be keyless
 3. Auto-detect: `TYPESAFE_API_KEY`, then `OPENROUTER_API_KEY` (env, then secret file)
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `PI_JEV_PROVIDER` | Force `typesafe` or `openrouter` | `auto` |
-| `PI_JEV_API_KEY` | Explicit key, overriding both providers | — |
+| `PI_JEV_PROVIDER` | Force `typesafe`, `openrouter`, or explicit local `laya` | `auto` |
+| `PI_JEV_API_KEY` | Explicit bearer token, overriding provider-specific keys | — |
 | `PI_JEV_BASE_URL` | Override the API root (must not include `/v1`) | per provider |
 | `PI_JEV_MODEL` | Override the Jev model | `jev-latest` |
 | `PI_JEV_SECRETS_DIR` | Directory holding the secret files | `~/.pi/agent/secrets` |
+| `LAYA_API_KEY` | Optional bearer token for a protected Laya server | — |
 | `TYPESAFE_BASE_URL`, `TYPESAFE_DEFAULT_MODEL` | Legacy TypeSafe-only overrides | — |
 
 `PI_JEV_BASE_URL` (and the settings Base URL) that names OpenRouter also selects the
 OpenRouter provider; a URL naming the other provider is ignored, so one provider's key
 is never sent to the other's host. `PI_JEV_MODEL` applies to the fallback provider too.
 
-If the active provider rejects a request with `401`, `402`, `403`, or `404` and the
-other provider also has credentials, pi-jev retries once against it and reports the
-switch in `/jev status`. Rate limits, timeouts, server errors, and cancellations
-never trigger a fallback.
+If TypeSafe or OpenRouter rejects a request with `401`, `402`, `403`, or `404` and the
+other hosted provider has credentials, pi-jev retries once against it and reports the
+switch in `/jev status`. Laya never participates in fallback in either direction.
+Rate limits, timeouts, server errors, and cancellations never trigger a fallback.
 
 **OpenRouter notes**
 
 - The bare model id `jev-latest` is mapped server-side to `~typesafe/jev-latest`;
   pinned ids such as `typesafe/jev-1.13` pass through unchanged.
-- Jev has a 32K context window, so requests stay bounded (at most 10 tool candidates
+- Hosted Jev has a 32K context window, so requests stay bounded (at most 10 tool candidates
   and 6 designed questions).
 - OpenRouter billing is prepaid; without credits requests fail with `402`.
 - `client.models.list()` is unsupported on OpenRouter and is never called.
@@ -158,9 +196,10 @@ file, or both:
 ```
 
 **API keys are never written to these files or to session entries.** The provider is
-editable, but the key always comes from `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, or
-`~/.pi/agent/secrets/`. The **Provider · API key** row is read-only and shows the source
-(e.g. `$OPENROUTER_API_KEY`).
+editable, but a key always comes from `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`,
+`LAYA_API_KEY`, or `~/.pi/agent/secrets/`. The **Provider · API key** row is read-only
+and shows the source (for example `$OPENROUTER_API_KEY`), or “not required” for a
+keyless local Laya endpoint.
 
 Malformed values in a settings file are ignored rather than coerced, so a typo cannot
 silently change behaviour. Writes are atomic (temp file + rename).
@@ -317,7 +356,7 @@ routing switches.
 ## Commands
 
 - `/jev-settings` — Opens the interactive settings editor (modes, provider, live status, test/persist/reset actions).
-- `/jev status` — Shows Jev configuration (active provider, API root, model, and where the API key came from together with which config layer supplied it), any cross-provider fallback, auto-mode state, session request count, total tokens, session cost, truncated-state counts, and available tool counts.
+- `/jev status` — Shows Jev configuration (active provider, API root, model, authentication mode, and key source when present, together with which config layer supplied it), any hosted-provider fallback, auto-mode state, session request count, total tokens, session cost, truncated-state counts, and available tool counts.
 - `/jev help` — Lists available subcommands.
 - `/jev skills [query]` — Discover and rank matching skills in the workspace using Jev.
 - `/jev test [prompt]` — With no prompt, runs the fixed connectivity smoke test. With a prompt, the active model designs the Jev questions for that prompt and Jev evaluates them. Designed Noul questions may carry `true`/`false` descriptions, and Score rubrics need at least two levels ordered lowest → highest (index 0 is score 0), matching the SDK. Also accepts `/jev eval` and `/jev evaluate`.

@@ -86,12 +86,13 @@ export function printHelp(): void {
   console.log(`
 Usage: jev-gate [options] [criteria]
 
-Post-run gate check using Jev System One evaluation (TypeSafe or OpenRouter).
+Post-run gate check using Jev System One evaluation (TypeSafe, OpenRouter, or local Laya).
 Exits with 0 if evaluation meets threshold, non-zero otherwise.
 
 Provider credentials come from TYPESAFE_API_KEY or OPENROUTER_API_KEY
-(or ~/.pi/agent/secrets/{typesafe,openrouter}_api_key).
-PI_JEV_PROVIDER forces a provider; PI_JEV_API_KEY/PI_JEV_BASE_URL override both.
+(or ~/.pi/agent/secrets/{typesafe,openrouter}_api_key). Local Laya is keyless by
+default; select it with PI_JEV_PROVIDER=laya and optionally set LAYA_API_KEY.
+PI_JEV_API_KEY and PI_JEV_BASE_URL are generic overrides.
 
 Options:
   -c, --criteria <text>      Acceptance criteria to check against output/diff

@@ -25,6 +25,7 @@ function fakeClient(configured = true): JevClient {
             baseURL: "https://openrouter.ai/api",
             model: "jev-latest",
             keyOrigin: "$OPENROUTER_API_KEY",
+            authMode: "bearer",
           }
         : null,
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
@@ -94,6 +95,29 @@ test("test_readonly_rows_reflect_unconfigured_state", () => {
     const items = buildSettingItems(h.service, fakeClient(false), UI, () => {});
     const apiKey = items.find((item) => item.id === "status.apiKey")!;
     assert.equal(apiKey.currentValue, "(unset)");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("test_readonly_api_key_row_explains_keyless_local_laya", () => {
+  const h = makeSettingsHarness();
+  const localClient = {
+    getProviderInfo: () => ({
+      provider: "laya",
+      label: "Laya (local)",
+      baseURL: "http://127.0.0.1:8000",
+      model: "jev-latest",
+      keyOrigin: null,
+      authMode: "none",
+    }),
+    stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
+    isConfigured: () => true,
+  } as unknown as JevClient;
+  try {
+    const items = buildSettingItems(h.service, localClient, UI, () => {});
+    const apiKey = items.find((item) => item.id === "status.apiKey")!;
+    assert.equal(apiKey.currentValue, "not required (local endpoint)");
   } finally {
     h.cleanup();
   }

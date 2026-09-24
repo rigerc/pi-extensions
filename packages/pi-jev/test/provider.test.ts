@@ -9,6 +9,7 @@ import {
   FALLBACK_STATUSES,
   JEV_ENV,
   JEV_PROVIDERS,
+  LAYA_MAX_STATE_CHARS,
   JevClient,
   inferProviderFromBaseURL,
   isProviderFallbackError,
@@ -23,6 +24,7 @@ const MANAGED_ENV = [
   "TYPESAFE_BASE_URL",
   "TYPESAFE_DEFAULT_MODEL",
   "OPENROUTER_API_KEY",
+  JEV_ENV.layaApiKey,
   JEV_ENV.provider,
   JEV_ENV.apiKey,
   JEV_ENV.baseURL,
@@ -91,6 +93,124 @@ function stubSystemOne(handler: (call: StubCall) => unknown) {
 }
 
 const NOUL_QUESTION = { ok: { type: "noul" as const, instructions: "Is this fine?" } };
+
+test("test_provider_explicit_laya_is_configured_without_an_api_key", () => {
+  const env = isolateEnv({ [JEV_ENV.provider]: "laya" });
+  try {
+    const client = new JevClient();
+    const config = client.getConfig();
+    assert.equal(config?.provider, "laya");
+    assert.equal(config?.label, "Laya (local)");
+    assert.equal(config?.baseURL, "http://127.0.0.1:8000");
+    assert.equal(config?.model, DEFAULT_MODEL);
+    assert.equal(config?.apiKey, undefined);
+    assert.equal(config?.keyOrigin, null);
+    assert.equal(config?.authMode, "none");
+    assert.equal(client.isConfigured(), true);
+    assert.equal(client.getKeyOrigin(), null);
+    assert.equal(client.getProviderInfo()?.authMode, "none");
+  } finally {
+    env.restore();
+  }
+});
+
+test("test_provider_settings_can_select_laya_without_env_or_credentials", () => {
+  const env = isolateEnv();
+  try {
+    const client = new JevClient();
+    client.setProviderOverrides({ provider: "laya" });
+    assert.equal(client.getConfig()?.provider, "laya");
+    assert.equal(client.isConfigured(), true);
+  } finally {
+    env.restore();
+  }
+});
+
+test("test_provider_laya_uses_specific_key_then_secret_file", () => {
+  const fromEnv = isolateEnv({ [JEV_ENV.provider]: "laya", [JEV_ENV.layaApiKey]: "laya-env-key" });
+  try {
+    const config = resolveJevProvider();
+    assert.equal(config?.apiKey, "laya-env-key");
+    assert.equal(config?.keyOrigin, "$LAYA_API_KEY");
+    assert.equal(config?.authMode, "bearer");
+  } finally {
+    fromEnv.restore();
+  }
+
+  const fromFile = isolateEnv({ [JEV_ENV.provider]: "laya" });
+  fromFile.writeSecret("laya_api_key", "laya-file-key\n");
+  try {
+    const config = resolveJevProvider();
+    assert.equal(config?.apiKey, "laya-file-key");
+    assert.equal(config?.keyOrigin, "~/.pi/agent/secrets/laya_api_key");
+    assert.equal(config?.authMode, "bearer");
+  } finally {
+    fromFile.restore();
+  }
+});
+
+test("test_provider_pi_jev_key_outranks_laya_key", () => {
+  const env = isolateEnv({
+    [JEV_ENV.provider]: "laya",
+    [JEV_ENV.apiKey]: "generic-key",
+    [JEV_ENV.layaApiKey]: "laya-key",
+  });
+  try {
+    const config = resolveJevProvider();
+    assert.equal(config?.provider, "laya");
+    assert.equal(config?.apiKey, "generic-key");
+    assert.equal(config?.keyOrigin, "$PI_JEV_API_KEY");
+  } finally {
+    env.restore();
+  }
+});
+
+test("test_provider_auto_never_selects_laya", () => {
+  const env = isolateEnv({ [JEV_ENV.layaApiKey]: "laya-key" });
+  try {
+    assert.equal(resolveJevProvider(), null);
+  } finally {
+    env.restore();
+  }
+});
+
+test("test_provider_laya_base_url_has_no_v1_suffix_and_accepts_overrides", () => {
+  assert.equal(JEV_PROVIDERS.laya.baseURL, "http://127.0.0.1:8000");
+  assert.equal(`${JEV_PROVIDERS.laya.baseURL}/v1/systemone`, "http://127.0.0.1:8000/v1/systemone");
+
+  const env = isolateEnv({
+    [JEV_ENV.provider]: "laya",
+    [JEV_ENV.baseURL]: "http://127.0.0.1:18000",
+    [JEV_ENV.model]: "multilingual",
+  });
+  try {
+    const config = resolveJevProvider();
+    assert.equal(config?.baseURL, "http://127.0.0.1:18000");
+    assert.equal(config?.model, "multilingual");
+  } finally {
+    env.restore();
+  }
+});
+
+test("test_laya_rejects_known_hosted_provider_base_urls", () => {
+  for (const baseURL of ["https://api.typesafe.ai", "https://openrouter.ai/api"]) {
+    const env = isolateEnv({
+      [JEV_ENV.provider]: "laya",
+      [JEV_ENV.baseURL]: baseURL,
+    });
+    try {
+      const config = resolveJevProvider();
+      assert.equal(config?.provider, "laya");
+      assert.equal(
+        config?.baseURL,
+        "http://127.0.0.1:8000",
+        `Laya must not be redirected to hosted provider ${baseURL}`
+      );
+    } finally {
+      env.restore();
+    }
+  }
+});
 
 test("test_provider_explicit_openrouter_uses_openrouter_base_url_and_key", () => {
   const env = isolateEnv({ OPENROUTER_API_KEY: "or-key", [JEV_ENV.provider]: "openrouter" });
@@ -375,6 +495,109 @@ test("test_resolve_fallback_provider_returns_the_other_configured_provider", () 
     assert.equal(resolveFallbackProvider("openrouter"), null, "no other provider is configured");
   } finally {
     solo.restore();
+  }
+});
+
+test("test_laya_is_never_part_of_cross_provider_fallback", () => {
+  const env = isolateEnv({
+    TYPESAFE_API_KEY: "ts-key",
+    OPENROUTER_API_KEY: "or-key",
+    [JEV_ENV.layaApiKey]: "laya-key",
+  });
+  try {
+    assert.equal(resolveFallbackProvider("laya"), null, "local requests never fall back to cloud");
+
+    delete process.env.OPENROUTER_API_KEY;
+    assert.equal(
+      resolveFallbackProvider("typesafe"),
+      null,
+      "a Laya credential never makes it the fallback for a hosted provider"
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test("test_laya_401_does_not_retry_a_hosted_provider", async () => {
+  const env = isolateEnv({ TYPESAFE_API_KEY: "ts-key", OPENROUTER_API_KEY: "or-key" });
+  let attempts = 0;
+  const stub = stubSystemOne(() => {
+    attempts += 1;
+    throw Object.assign(new Error("401 unauthorized"), { status: 401 });
+  });
+  try {
+    const client = new JevClient();
+    client.setProviderOverrides({ provider: "laya" });
+    await assert.rejects(() => client.evaluate({ state: "s", questions: NOUL_QUESTION }));
+    assert.equal(attempts, 1);
+    assert.equal(client.stats.fallback, undefined);
+  } finally {
+    stub.restore();
+    env.restore();
+  }
+});
+
+test("test_laya_client_uses_jev_wire_shape_and_provider_specific_state_cap", async () => {
+  const env = isolateEnv({ [JEV_ENV.provider]: "laya" });
+  const stub = stubSystemOne(() => ({
+    model: "laya-rl-agent",
+    answers: {
+      category: {
+        type: "choice",
+        choice: "billing",
+        probabilities: { billing: 0.91, other: 0.09 },
+        confidence: 0.82,
+        answer_confidence: 0.91,
+        action: { act_probability: 1 },
+      },
+      severity: {
+        type: "score",
+        score: 1.6,
+        probabilities: { "0": 0.1, "1": 0.2, "2": 0.7 },
+        confidence: 0.6,
+        legend: { "0": "low", "1": "medium", "2": "high" },
+      },
+      urgent: { type: "noul", noul: 0.87, confidence: 0.87 },
+    },
+    usage: { input_tokens: 42, output_tokens: 0 },
+    routing: { model: "english", reason: "English Latin text" },
+  }));
+  try {
+    const client = new JevClient();
+    const response = await client.evaluate({
+      state: "x".repeat(60_000),
+      questions: {
+        category: {
+          type: "choice",
+          instructions: "Which category fits?",
+          criteria: { billing: "Billing", other: "Anything else" },
+        },
+        severity: {
+          type: "score",
+          instructions: "How severe is it?",
+          criteria: ["low", "medium", "high"],
+        },
+        urgent: { type: "noul", instructions: "Is it urgent?" },
+      },
+    });
+
+    assert.equal(stub.calls.length, 1, "keyless Laya still constructs the SDK client");
+    assert.equal(stub.calls[0].baseURL, "http://127.0.0.1:8000");
+    assert.equal(stub.calls[0].defaultModel, DEFAULT_MODEL);
+    assert.ok(JSON.stringify(stub.calls[0].request.state).length <= LAYA_MAX_STATE_CHARS);
+    assert.match(String(stub.calls[0].request.state), /truncated/);
+
+    assert.equal(response.model, "laya-rl-agent");
+    assert.equal(response.answers.category.value, "billing");
+    assert.deepEqual(response.answers.category.distribution, { billing: 0.91, other: 0.09 });
+    assert.equal(response.answers.severity.value, 1.6);
+    assert.equal(response.answers.urgent.value, 0.87);
+    assert.equal(response.usage?.totalTokens, 42);
+    assert.equal(client.stats.provider, "laya");
+    assert.equal(client.stats.truncations, 1);
+  } finally {
+    stub.restore();
+    env.restore();
   }
 });
 

@@ -114,6 +114,7 @@ export function makeSettingsHarness(options: HarnessOptions = {}): SettingsHarne
       baseURL: "https://openrouter.ai/api",
       model: "jev-latest",
       keyOrigin: "$OPENROUTER_API_KEY",
+      authMode: "bearer",
     }),
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
     isConfigured: () => true,

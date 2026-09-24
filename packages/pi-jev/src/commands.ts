@@ -69,7 +69,7 @@ export function registerJevCommands(
   const modeValue = (key: SettingKey, live: boolean): boolean =>
     settings ? Boolean(settings.values[key as keyof typeof settings.values]) : live;
   pi.registerCommand("jev", {
-    description: "Manage Jev integration (TypeSafe or OpenRouter): status, enable, disable, auto, test, skills",
+    description: "Manage Jev integration (TypeSafe, OpenRouter, or local Laya): status, enable, disable, auto, test, skills",
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const tokens = args.trim().split(/\s+/).filter(Boolean);
       const sub = (tokens[0] ?? "").toLowerCase();
@@ -80,6 +80,7 @@ export function registerJevCommands(
       if (sub === "status" || sub === "") {
         const origin = jevClient.getKeyOrigin();
         const info = jevClient.getProviderInfo();
+        const configured = jevClient.isConfigured();
         const stats = jevClient.stats;
         const activeTools = pi.getActiveTools();
         const allTools = pi.getAllTools();
@@ -90,11 +91,20 @@ export function registerJevCommands(
 
         const lines = [
           `Jev Status:`,
-          `• Configured: ${origin ? `Yes (from ${origin})` : "No"}`,
+          `• Configured: ${
+            configured
+              ? origin
+                ? `Yes (from ${origin})`
+                : info?.authMode === "none"
+                  ? "Yes (local endpoint; no key required)"
+                  : "Yes"
+              : "No"
+          }`,
           ...(info
             ? [
                 `• Provider: ${info.provider} (${info.baseURL})${layer("provider")}`,
                 `• Model: ${info.model}${layer("model")}`,
+                `• Authentication: ${info.authMode === "none" ? "not required" : "bearer"}`,
               ]
             : []),
           `• Requests in session: ${stats.requestsCount}`,
@@ -112,8 +122,8 @@ export function registerJevCommands(
           ...(stats.fallback
             ? [`• Fallback: ${stats.fallback.from} → ${stats.fallback.to} (${stats.fallback.reason})`]
             : []),
-          `• Auto tool routing: ${autoTools() ? "on" : "off"}${layer("autoToolRouting")}${autoTools() && !origin ? " (inactive: Jev unconfigured)" : ""}`,
-          `• Auto skill routing: ${autoSkills() ? "on" : "off"}${layer("autoSkillRouting")}${autoSkills() && !origin ? " (inactive: Jev unconfigured)" : ""}`,
+          `• Auto tool routing: ${autoTools() ? "on" : "off"}${layer("autoToolRouting")}${autoTools() && !configured ? " (inactive: Jev unconfigured)" : ""}`,
+          `• Auto skill routing: ${autoSkills() ? "on" : "off"}${layer("autoSkillRouting")}${autoSkills() && !configured ? " (inactive: Jev unconfigured)" : ""}`,
           `• Auto-model: ${modeValue("autoModel", modelMode.enabled) ? "on" : "off"}${layer("autoModel")}`,
           `• Tool guard: ${modeValue("toolGuard", guardMode.enabled) ? "on" : "off"}${layer("toolGuard")}`,
           `• Jev compaction: ${modeValue("compaction", compactMode.enabled) ? "on" : "off"}${layer("compaction")}`,

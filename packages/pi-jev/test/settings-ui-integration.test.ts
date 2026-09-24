@@ -83,6 +83,7 @@ function openSettings() {
       baseURL: "https://openrouter.ai/api",
       model: "jev-latest",
       keyOrigin: "$OPENROUTER_API_KEY",
+      authMode: "bearer",
     }),
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
     isConfigured: () => true,
@@ -224,8 +225,10 @@ test("test_provider_row_cycles_through_the_allowed_values", async () => {
     assert.equal(h.settings.values.provider, "typesafe", "auto → typesafe");
     component.handleInput(" ");
     assert.equal(h.settings.values.provider, "openrouter");
+    component.handleInput(" ");
+    assert.equal(h.settings.values.provider, "laya");
     assert.deepEqual(h.providerOverrides.at(-1), {
-      provider: "openrouter",
+      provider: "laya",
       baseURL: "",
       model: "jev-latest",
     });

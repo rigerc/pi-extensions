@@ -48,7 +48,7 @@ export const SETTING_DEFAULTS: JevSettings = {
   model: "jev-latest",
 };
 
-export const PROVIDER_VALUES: readonly ProviderChoice[] = ["auto", "typesafe", "openrouter"];
+export const PROVIDER_VALUES: readonly ProviderChoice[] = ["auto", "typesafe", "openrouter", "laya"];
 
 export interface SettingSpec {
   key: SettingKey;
@@ -132,7 +132,7 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     key: "provider",
     label: "Provider",
     group: "Provider",
-    description: "System One backend. auto = first configured of TYPESAFE_API_KEY, OPENROUTER_API_KEY",
+    description: "System One backend. auto detects hosted credentials; select laya explicitly for local inference",
     kind: "enum",
     values: PROVIDER_VALUES,
     envVar: "PI_JEV_PROVIDER",
@@ -141,7 +141,7 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     key: "baseURL",
     label: "Base URL",
     group: "Provider",
-    description: "API root without /v1. Empty = the provider default (OpenRouter: https://openrouter.ai/api)",
+    description: "API root without /v1. Empty = provider default (Laya: http://127.0.0.1:8000)",
     kind: "string",
     allowEmpty: true,
     envVar: "PI_JEV_BASE_URL",
@@ -150,7 +150,7 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     key: "model",
     label: "Model",
     group: "Provider",
-    description: "Jev model id. jev-latest works on both backends",
+    description: "Model id. jev-latest auto-routes on Laya; or pin english, multilingual, typed-decisions",
     kind: "string",
     envVar: "PI_JEV_MODEL",
   },
