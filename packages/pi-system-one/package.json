@@ -1,6 +1,6 @@
 {
   "name": "@rigerc/pi-system-one",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Provider-agnostic semantic routing and typed System One decisions for Pi",
   "type": "module",
   "main": "extensions/index.ts",

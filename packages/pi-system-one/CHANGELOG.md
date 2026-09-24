@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1](https://github.com/rigerc/pi-extensions/compare/pi-system-one-v0.7.0...pi-system-one-v0.7.1) (2026-09-24)
+
+
+### Features
+
+* **pi-system-one:** add Laya health checks and clean up commands ([baaaeaa](https://github.com/rigerc/pi-extensions/commit/baaaeaa5ce6e91f6dd2badacd6be4748bae2a764))
+
 ## [0.8.0] - Unreleased
 
 ### Renamed
