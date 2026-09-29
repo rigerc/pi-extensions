@@ -62,7 +62,7 @@ test('ToolGuard does not path-check write, because creating a file is valid', as
   const mockSystemOne = {
     isConfigured: () => true,
     evaluate: async () => ({
-      answers: { invalid_parameters: { type: 'noul', value: 0.1 } },
+      answers: { invalid_parameters: { type: 'bool', value: 0.1 } },
       model: 'm',
       elapsedMs: 1,
     }),
@@ -160,7 +160,7 @@ test("ToolGuard sends the tool's own contract with the shape question", async ()
     evaluate: async (request: any) => {
       requests.push(request);
       return {
-        answers: { invalid_parameters: { type: 'noul', value: 0.95 } },
+        answers: { invalid_parameters: { type: 'bool', value: 0.95 } },
         model: 'jev-latest',
         elapsedMs: 15,
       };
@@ -185,6 +185,7 @@ test("ToolGuard sends the tool's own contract with the shape question", async ()
   assert.equal(res.source, 'system-one');
   assert.match(res.reason ?? '', /hallucinated parameters/);
   assert.deepEqual(Object.keys(requests[0].questions), ['invalid_parameters']);
+  assert.equal(requests[0].questions.invalid_parameters.type, 'bool');
   assert.equal(requests[0].state.description, 'Read a file from disk');
   assert.equal(requests[0].state.schema.properties.path.type, 'string');
 });
@@ -193,7 +194,7 @@ test('ToolGuard allows a call whose arguments are well-formed for the tool', asy
   const mockSystemOne = {
     isConfigured: () => true,
     evaluate: async () => ({
-      answers: { invalid_parameters: { type: 'noul', value: 0.84 } },
+      answers: { invalid_parameters: { type: 'bool', value: 0.84 } },
       model: 'jev-latest',
       elapsedMs: 11,
     }),

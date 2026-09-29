@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import { executeSystemOneAgentTask, SystemOneAgentHandler } from '../src/agent.js';
 import { SystemOneClient } from '../src/system-one.js';
 
-test('executeSystemOneAgentTask runs noul check for simple prompt', async () => {
+test('executeSystemOneAgentTask runs bool check for simple prompt', async () => {
   const mockClient = new SystemOneClient();
   mockClient.isConfigured = () => true;
   mockClient.evaluate = async (req) => {
     assert.ok(req.questions['judgment']);
-    assert.equal(req.questions['judgment'].type, 'noul');
+    assert.equal(req.questions['judgment'].type, 'bool');
     return {
       answers: {
         judgment: {
-          type: 'noul',
+          type: 'bool',
           value: 0.88,
         },
       },

@@ -2,7 +2,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { SystemOneClient } from '../src/system-one.js';
 import { ToolRouter } from '../src/router.js';
 import { SkillRouter } from '../src/skills.js';
-import { AutoSystemOne } from '../src/auto.js';
+import { AutoSystemOne, formatAutoSkillMessage } from '../src/auto.js';
 import { registerSystemOneTools } from '../src/tools.js';
 import { registerSystemOneCommands } from '../src/commands.js';
 import { AutoModelRouter } from '../src/model-router.js';
@@ -23,34 +23,19 @@ export function shouldAutoDispatch(prompt: string): boolean {
 
 export default function (pi: ExtensionAPI) {
   const systemOneClient = new SystemOneClient();
-  let healthTimer: ReturnType<typeof setInterval> | undefined;
-  let healthUi: { setStatus(key: string, text: string | undefined): void } | undefined;
-  const renderHealth = () => {
-    if (!healthUi) return;
-    if (systemOneClient.getProviderInfo()?.provider !== 'laya') {
-      healthUi.setStatus('system-one-health', undefined);
-      return;
-    }
-    const health = systemOneClient.getLayaHealthStatus();
-    healthUi.setStatus(
-      'system-one-health',
-      health?.result
-        ? 'Laya endpoint: healthy'
-        : health?.error
-          ? 'Laya endpoint: unavailable'
-          : 'Laya endpoint: checking',
-    );
-  };
-  const probeHealth = async () => {
-    if (systemOneClient.getProviderInfo()?.provider !== 'laya') return;
-    try {
-      await systemOneClient.checkLayaHealth();
-    } catch {
-      // The client caches the failure and renderHealth displays it.
-    }
-  };
   const router = new ToolRouter(pi, systemOneClient);
   const skillRouter = new SkillRouter(pi, systemOneClient);
+
+  /**
+   * The extension is constructed before any event fires, so the registry arrives with
+   * the first context. Attaching in every handler that has one keeps a classifier call
+   * working even if a tool runs before the next event.
+   */
+  const attach = (ctx: { modelRegistry?: { classify?: unknown } }): boolean => {
+    if (typeof ctx.modelRegistry?.classify !== 'function') return false;
+    systemOneClient.attach(ctx.modelRegistry as Parameters<typeof systemOneClient.attach>[0]);
+    return true;
+  };
 
   // Flags are on-only forcing switches. Environment variables are handled by the
   // settings layer (SettingsService) so file/project config can sit underneath them.
@@ -134,23 +119,23 @@ export default function (pi: ExtensionAPI) {
     settings,
   );
 
-  pi.on('session_start', (_event, ctx) => {
-    healthUi = ctx.ui;
-    systemOneClient.setHealthStatusListener((configurationChanged) => {
-      renderHealth();
-      if (configurationChanged) void probeHealth();
-    });
-    settings.init(ctx);
-    renderHealth();
-    if (healthTimer) clearInterval(healthTimer);
-    healthTimer = setInterval(() => {
-      void probeHealth();
-    }, 60_000);
-    healthTimer.unref();
-
-    if (!systemOneClient.isConfigured()) {
-      ctx.ui.setStatus('system-one', 'system-one: unconfigured');
+  pi.on('session_start', async (_event, ctx) => {
+    if (!attach(ctx)) {
+      ctx.ui.setStatus('system-one', 'system-one: needs pi 0.99 or newer');
+      settings.init(ctx);
       return;
+    }
+    settings.init(ctx);
+
+    const available = await systemOneClient.listAvailable();
+    if (available.length === 0) {
+      ctx.ui.setStatus('system-one', 'system-one: no classifier available (/login or /llama)');
+      return;
+    }
+
+    const info = await systemOneClient.getProviderInfo();
+    if (info && !info.auth.includes('not configured')) {
+      ctx.ui.setStatus('system-one', `system-one: classifier ${info.provider}/${info.model}`);
     }
 
     const paths = [auto.tools ? 'tools' : undefined, auto.skills ? 'skills' : undefined].filter(
@@ -162,13 +147,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on('session_shutdown', () => {
-    if (healthTimer) clearInterval(healthTimer);
-    healthTimer = undefined;
-    systemOneClient.setHealthStatusListener(undefined);
-    healthUi = undefined;
+    systemOneClient.detach();
   });
 
   pi.on('session_before_compact', async (event, ctx) => {
+    attach(ctx);
     const result = await compactor.compact(event, ctx);
     if (!result.summary) return;
     ctx.ui.setStatus('system-one', `system-one: compact kept ${result.kept}/${result.considered}`);
@@ -182,6 +165,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on('after_provider_response', (event, ctx) => {
+    attach(ctx);
     const kind = autoModel.recordProviderResponse(event.status, ctx.model);
     if (kind) {
       ctx.ui.setStatus('system-one', `system-one: ${kind} → fallback next prompt`);
@@ -189,6 +173,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on('before_agent_start', async (event, ctx) => {
+    attach(ctx);
     // Agent orchestration and auto-model are independent opt-in modes, so neither may
     // ride on the auto tool/skill routing switch.
     if (agents.enabled && shouldAutoDispatch(event.prompt)) {
@@ -218,13 +203,14 @@ export default function (pi: ExtensionAPI) {
 
     if (result.skills.length === 0) return;
 
+    const content = formatAutoSkillMessage(result.skills);
+    if (!content) return;
+
     return {
       message: {
         customType: 'system-one-auto',
         display: true,
-        content:
-          'System One auto-matched skill(s) for this task. Load the matching SKILL.md before proceeding:\n' +
-          result.skills.map((s) => `• /skill:${s.name} (P=${s.probability.toFixed(2)})`).join('\n'),
+        content,
       },
     };
   });

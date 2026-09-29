@@ -40,6 +40,20 @@ function normalizeLegacySettings(record: Record<string, unknown>): RawSettings {
 }
 
 /**
+ * Drop the keys the 0.99 migration removed.
+ *
+ * `baseURL` named a host this package used to call itself. Pi resolves the endpoint from
+ * the provider, so a stale value here would only mislead — and a stale `laya` provider
+ * would name a classifier that no longer exists. Unknown keys are still left in place for
+ * per-key validation, so this only removes what is known to be dead.
+ */
+function dropRetiredSettings(record: Record<string, unknown>): RawSettings {
+  const { baseURL: _baseURL, ...rest } = record;
+  if (rest.provider === 'laya') rest.provider = 'auto';
+  return rest as RawSettings;
+}
+
+/**
  * Read a settings file. Unreadable or malformed files behave as empty — a broken
  * config must never take the extension down, and validation happens per key later.
  */
@@ -49,7 +63,7 @@ export function readSettingsFile(filePath: string): RawSettings {
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf8'));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const { version: _version, ...rest } = parsed as Record<string, unknown>;
-    return normalizeLegacySettings(rest);
+    return dropRetiredSettings(normalizeLegacySettings(rest));
   } catch {
     return {};
   }
@@ -114,7 +128,9 @@ export function readSessionOverridesWithSource(
       continue;
     }
     if (candidate.data && typeof candidate.data === 'object' && !Array.isArray(candidate.data)) {
-      const normalized = normalizeLegacySettings(candidate.data as Record<string, unknown>);
+      const normalized = dropRetiredSettings(
+        normalizeLegacySettings(candidate.data as Record<string, unknown>),
+      );
       if (candidate.customType === SESSION_ENTRY_TYPE) latestCanonical = normalized;
       else latestLegacy = normalized;
     }

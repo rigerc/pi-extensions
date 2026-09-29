@@ -30,7 +30,7 @@ test('test_parse_boolean_accepts_common_spellings_and_rejects_the_rest', () => {
 test('test_coerce_setting_rejects_invalid_values_instead_of_coercing', () => {
   const model = getSpec('model')!;
   const provider = getSpec('provider')!;
-  const baseURL = getSpec('baseURL')!;
+  const temperature = getSpec('temperature')!;
 
   assert.equal(coerceSetting(model, 'typesafe/jev-1.13'), 'typesafe/jev-1.13');
   assert.equal(coerceSetting(model, ''), undefined, 'model may not be empty');
@@ -39,16 +39,27 @@ test('test_coerce_setting_rejects_invalid_values_instead_of_coercing', () => {
   assert.equal(
     coerceSetting(provider, 'OpenRouter'),
     'openrouter',
-    'enum values are case-insensitive',
+    'provider ids are case-insensitive',
   );
-  assert.equal(coerceSetting(provider, 'Laya'), 'laya', 'the local provider is accepted');
-  assert.equal(coerceSetting(provider, 'anthropic'), undefined, 'unknown provider is rejected');
-
-  assert.equal(coerceSetting(baseURL, ''), '', 'empty base URL means provider default');
   assert.equal(
-    coerceSetting(baseURL, '  https://openrouter.ai/api  '),
-    'https://openrouter.ai/api',
+    coerceSetting(provider, 'laya'),
+    undefined,
+    'the removed local provider is no longer accepted',
   );
+  assert.equal(
+    coerceSetting(provider, 'llama.cpp'),
+    'llama.cpp',
+    'a provider this package never heard of is still accepted',
+  );
+  assert.equal(
+    coerceSetting(provider, 'not a provider!'),
+    undefined,
+    'a malformed id is rejected rather than sent to the registry',
+  );
+  assert.equal(coerceSetting(provider, ''), undefined, 'provider may not be empty');
+
+  assert.equal(coerceSetting(temperature, ''), '', 'empty temperature means provider default');
+  assert.equal(coerceSetting(temperature, ' 1.5 '), '1.5');
 });
 
 test('test_effective_config_precedence_defaults_user_project_env_flag_session', () => {
@@ -90,9 +101,9 @@ test('test_invalid_layer_values_are_ignored_and_do_not_override_defaults', () =>
   const resolved = resolveSettings({
     user: {
       model: 123,
-      provider: 'anthropic',
+      provider: 'not a provider!',
       autoToolRouting: 'maybe',
-      baseURL: false,
+      temperature: false,
       notARealSetting: true,
     } as Record<string, unknown>,
   });
@@ -101,7 +112,7 @@ test('test_invalid_layer_values_are_ignored_and_do_not_override_defaults', () =>
   assert.equal(resolved.provenance.model, 'default');
   assert.equal(resolved.values.provider, SETTING_DEFAULTS.provider);
   assert.equal(resolved.values.autoToolRouting, SETTING_DEFAULTS.autoToolRouting);
-  assert.equal(resolved.values.baseURL, SETTING_DEFAULTS.baseURL);
+  assert.equal(resolved.values.temperature, SETTING_DEFAULTS.temperature);
   assert.equal(resolved.provenance.autoToolRouting, 'default');
   assert.ok(!Object.prototype.hasOwnProperty.call(resolved.values, 'notARealSetting'));
 });
@@ -188,12 +199,12 @@ test('test_noneditable_legacy_provider_env_is_reported_without_exposing_values',
   const inputs = effectiveLegacyInputs(
     {
       PI_JEV_API_KEY: 'secret-value',
-      PI_JEV_SECRETS_DIR: '/legacy/secrets',
+      PI_JEV_BASE_URL: 'https://openrouter.ai/api',
     },
     () => undefined,
   );
 
-  assert.deepEqual(inputs, ['$PI_JEV_API_KEY', '$PI_JEV_SECRETS_DIR']);
+  assert.deepEqual(inputs, ['$PI_JEV_BASE_URL', '$PI_JEV_API_KEY']);
   assert.ok(!inputs.join(' ').includes('secret-value'));
 
   assert.deepEqual(
@@ -224,7 +235,7 @@ test('test_registry_is_well_formed', () => {
     assert.ok(!keys.has(spec.key), `duplicate setting key ${spec.key}`);
     keys.add(spec.key);
     assert.ok(isSettingKey(spec.key));
-    assert.ok(['Modes', 'Provider'].includes(spec.group), `${spec.key} has a known group`);
+    assert.ok(['Modes', 'Classifier'].includes(spec.group), `${spec.key} has a known group`);
     assert.ok(spec.label.length > 0 && spec.description.length > 0, `${spec.key} is documented`);
     assert.ok(
       Object.prototype.hasOwnProperty.call(SETTING_DEFAULTS, spec.key),

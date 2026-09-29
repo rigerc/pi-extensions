@@ -13,6 +13,7 @@ import {
   MAX_GATE_STATE_CHARS,
 } from '../src/gate.js';
 import { capState, SystemOneClient } from '../src/system-one.js';
+import { fakeRegistry } from './support/registry.js';
 
 function temporaryRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-system-one-gate-'));
@@ -20,18 +21,14 @@ function temporaryRepo(): string {
   return dir;
 }
 
-/** Exercise the real SystemOneClient state caps while replacing only network transport. */
+/** Exercise the real SystemOneClient state caps while replacing only the classifier transport. */
 function recordingClient() {
-  const client = new SystemOneClient();
-  client.setApiKey('test-key');
-  const requests: any[] = [];
-  (client as any).getClient = () => ({
-    systemOne: async (request: any) => {
-      requests.push(request);
-      return { answers: { gate_passed: { noul: 0.9 } }, model: 'test', usage: {} };
-    },
+  const fake = fakeRegistry({
+    classify: () => ({ answers: { gate_passed: { type: 'bool', probability: 0.9 } } }),
   });
-  return { client, requests };
+  const client = new SystemOneClient();
+  client.attach(fake.registry);
+  return { client, requests: fake.calls };
 }
 
 test('parseGateArgs parses flags and criteria correctly', () => {
@@ -42,6 +39,19 @@ test('parseGateArgs parses flags and criteria correctly', () => {
   assert.equal(opts.diff, true);
   assert.equal(opts.json, true);
   assert.equal(opts.failOpen, true);
+});
+
+test('parseGateArgs captures the classifier provider and model', () => {
+  const opts = parseGateArgs([
+    '--provider',
+    'openrouter',
+    '--model',
+    'typesafe/jev-1.13',
+    '-c',
+    'Clean',
+  ]);
+  assert.equal(opts.provider, 'openrouter');
+  assert.equal(opts.model, 'typesafe/jev-1.13');
 });
 
 test('parseGateArgs handles positional criteria', () => {
@@ -74,7 +84,7 @@ test('evaluateGate marks an evaluated pass as evaluated', async () => {
   const mockClient = new SystemOneClient();
   mockClient.isConfigured = () => true;
   mockClient.evaluate = async () => ({
-    answers: { gate_passed: { type: 'noul', value: 0.92, confidence: 0.95 } },
+    answers: { gate_passed: { type: 'bool', value: 0.92, confidence: 0.95 } },
     model: 'jev-latest',
     elapsedMs: 45,
   });
@@ -90,7 +100,7 @@ test('evaluateGate evaluates gate condition with SystemOneClient', async () => {
   mockClient.evaluate = async () => ({
     answers: {
       gate_passed: {
-        type: 'noul',
+        type: 'bool',
         value: 0.92,
         confidence: 0.95,
       },
@@ -114,6 +124,29 @@ test('evaluateGate evaluates gate condition with SystemOneClient', async () => {
   assert.equal(failResult.truncated, false);
 });
 
+test('evaluateGate selects the requested classifier provider and model', async () => {
+  const fake = fakeRegistry({
+    models: [
+      { provider: 'typesafe', id: 'jev-latest' },
+      { provider: 'openrouter', id: 'jev-versa' },
+    ],
+    classify: () => ({ answers: { gate_passed: { type: 'bool', probability: 0.95 } } }),
+  });
+  const client = new SystemOneClient();
+  client.attach(fake.registry);
+
+  const result = await evaluateGate(
+    { criteria: 'ok', state: 'x', provider: 'openrouter', model: 'jev-versa' },
+    client,
+  );
+
+  assert.equal(result.passed, true);
+  assert.equal(fake.calls.length, 1);
+  assert.equal(fake.calls[0].model.provider, 'openrouter');
+  assert.equal(fake.calls[0].model.id, 'jev-versa');
+  assert.equal(fake.calls[0].context.questions.gate_passed.type, 'bool');
+});
+
 test('capGateState marks evidence it had to cut', () => {
   const long = 'x'.repeat(500);
   const cut = capGateState(long, 100);
@@ -134,7 +167,7 @@ test('evaluateGate tells the judge when the evidence was truncated', async () =>
   mockClient.evaluate = async (request: any) => {
     requests.push(request);
     return {
-      answers: { gate_passed: { type: 'noul', value: 0.9 } },
+      answers: { gate_passed: { type: 'bool', value: 0.9 } },
       model: 'jev-latest',
       elapsedMs: 3,
     };
@@ -161,7 +194,7 @@ test('evaluateGate keeps untruncated evidence intact', async () => {
   mockClient.evaluate = async (request: any) => {
     requests.push(request);
     return {
-      answers: { gate_passed: { type: 'noul', value: 0.9 } },
+      answers: { gate_passed: { type: 'bool', value: 0.9 } },
       model: 'jev-latest',
       elapsedMs: 3,
     };
@@ -216,8 +249,8 @@ test('git per-file truncation reaches the gate request and result', async () => 
     const { client, requests } = recordingClient();
     const result = await evaluateGate({ criteria: 'No violations', diff: true }, client);
     assert.equal(result.truncated, true);
-    assert.equal(requests[0].state.truncated, true);
-    assert.match(requests[0].state.output, /\[truncated \d+ chars/);
+    assert.equal(requests[0].context.state.truncated, true);
+    assert.match(requests[0].context.state.output as string, /\[truncated \d+ chars/);
   } finally {
     process.chdir(originalCwd);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -231,11 +264,11 @@ test('gate marks client per-field cuts as truncated before sending the request',
       { criteria: 'No violations', state: 'x'.repeat(length) + 'UNSEEN_TAIL' },
       client,
     );
-    const state = requests[0].state;
+    const state = requests[0].context.state;
     assert.equal(result.truncated, true);
     assert.equal(state.truncated, true);
-    assert.match(state.output, /\[truncated \d+ chars/);
-    assert.doesNotMatch(state.output, /UNSEEN_TAIL/);
+    assert.match(state.output as string, /\[truncated \d+ chars/);
+    assert.doesNotMatch(state.output as string, /UNSEEN_TAIL/);
     assert.equal(
       capState(state).truncatedChars,
       0,

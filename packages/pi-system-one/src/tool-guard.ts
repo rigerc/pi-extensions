@@ -5,7 +5,7 @@ import type { SystemOneClient } from './system-one.js';
 import { isSystemOneTool } from './types.js';
 import { lastAssistantToolCalls } from './context.js';
 
-/** Blocking cutoff for the anti-hallucination Noul. High because blocking a call is destructive. */
+/** Blocking cutoff for the anti-hallucination bool question. High because blocking a call is destructive. */
 export const HALLUCINATION_THRESHOLD = 0.85;
 
 /**
@@ -220,7 +220,7 @@ export class ToolGuard {
           },
           questions: {
             invalid_parameters: {
-              type: 'noul',
+              type: 'bool',
               instructions: {
                 question:
                   'Are the arguments in `parameters` nonsensical, malformed, or fabricated for `tool`?',

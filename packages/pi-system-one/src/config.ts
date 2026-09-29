@@ -1,7 +1,11 @@
-import type { SystemOneProvider } from './types.js';
-
-/** Provider selection: an explicit provider, or `auto` to let env/secret detection decide. */
-export type ProviderChoice = SystemOneProvider | 'auto';
+/**
+ * Classifier selection: a concrete provider id, or `auto` to let pi's catalog decide.
+ *
+ * The provider is a pi provider id (`typesafe`, `openrouter`, `cloudflare-workers-ai`,
+ * `vercel-ai-gateway`, `opencode`, or a llama.cpp provider) rather than a fixed enum,
+ * because the set of classifiers is whatever pi's catalog offers on the machine.
+ */
+export type ProviderChoice = string;
 
 /** Config layers, lowest precedence first. */
 export type SettingLayer = 'default' | 'user' | 'project' | 'env' | 'flag' | 'session';
@@ -14,7 +18,7 @@ export const LAYER_ORDER: readonly SettingLayer[] = [
   'session',
 ];
 
-export type SettingGroup = 'Modes' | 'Provider';
+export type SettingGroup = 'Modes' | 'Classifier';
 
 /** Everything the settings TUI can edit. Thresholds and limits stay code constants by design. */
 export interface SystemOneSettings {
@@ -26,8 +30,9 @@ export interface SystemOneSettings {
   compaction: boolean;
   systemOneTools: boolean;
   provider: ProviderChoice;
-  baseURL: string;
   model: string;
+  /** Label-logit temperature for prompt-rendered classifiers; empty = provider default. */
+  temperature: string;
 }
 
 export type SettingKey = keyof SystemOneSettings;
@@ -44,16 +49,36 @@ export const SETTING_DEFAULTS: SystemOneSettings = {
   compaction: false,
   systemOneTools: false,
   provider: 'auto',
-  baseURL: '',
   model: 'jev-latest',
+  temperature: '',
 };
 
+/**
+ * Provider names referenced by documentation and by a machine with no catalog.
+ *
+ * This is not the set of selectable providers: the catalog is whatever pi offers, which
+ * includes providers this package has never heard of (`llama-cpp`, a gateway, a
+ * models.json entry). The list is only the cycling fallback for a settings list with no
+ * catalog loaded.
+ */
 export const PROVIDER_VALUES: readonly ProviderChoice[] = [
   'auto',
   'typesafe',
   'openrouter',
-  'laya',
+  'cloudflare-workers-ai',
+  'vercel-ai-gateway',
+  'opencode',
 ];
+
+/** Providers that were removed in 0.99, kept out of the accepted set on purpose. */
+const RETIRED_PROVIDERS = new Set(['laya']);
+
+/**
+ * A provider id pi could plausibly expose: a lowercase slug, optionally with dots.
+ * Anything else is a typo or an injection attempt, and is rejected rather than sent to
+ * the registry as a provider name.
+ */
+const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 
 export interface SettingSpec {
   key: SettingKey;
@@ -65,6 +90,12 @@ export interface SettingSpec {
   values?: readonly string[];
   /** Empty string is a meaningful value (Base URL means "provider default"). */
   allowEmpty?: boolean;
+  /** Values the settings layer must not accept, whatever the kind. */
+  retiredValues?: readonly string[];
+  /** Lowercase a `string` value before accepting it, so ids compare case-insensitively. */
+  lowercase?: boolean;
+  /** Reject a `string` value that does not match, so a typo never reaches the registry. */
+  pattern?: RegExp;
   /** Environment variable read by the `env` layer. */
   envVar?: string;
   /** Deprecated environment variable accepted during the 0.8 migration window. */
@@ -157,33 +188,34 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
   {
     key: 'provider',
     label: 'Provider',
-    group: 'Provider',
+    group: 'Classifier',
     description:
-      'System One backend. auto detects hosted credentials; select laya explicitly for local inference',
-    kind: 'enum',
-    values: PROVIDER_VALUES,
+      'Classifier provider. Any provider pi can reach; `auto` tries every available classifier. Sign in with /login, or load a local model with /llama',
+    kind: 'string',
+    lowercase: true,
+    pattern: PROVIDER_ID_PATTERN,
+    retiredValues: [...RETIRED_PROVIDERS],
     envVar: 'PI_SYSTEM_ONE_PROVIDER',
     legacyEnvVar: 'PI_JEV_PROVIDER',
   },
   {
-    key: 'baseURL',
-    label: 'Base URL',
-    group: 'Provider',
-    description: 'API root without /v1. Empty = provider default (Laya: http://127.0.0.1:8000)',
-    kind: 'string',
-    allowEmpty: true,
-    envVar: 'PI_SYSTEM_ONE_BASE_URL',
-    legacyEnvVar: 'PI_JEV_BASE_URL',
-  },
-  {
     key: 'model',
     label: 'Model',
-    group: 'Provider',
-    description:
-      'Model id. jev-latest auto-routes on Laya; or pin english, multilingual, typed-decisions',
+    group: 'Classifier',
+    description: 'Classifier model id, as pi lists it (default: jev-latest)',
     kind: 'string',
     envVar: 'PI_SYSTEM_ONE_MODEL',
     legacyEnvVar: 'PI_JEV_MODEL',
+  },
+  {
+    key: 'temperature',
+    label: 'Temperature',
+    group: 'Classifier',
+    description:
+      'Label-logit temperature for local classifiers. Above 1 softens an overconfident distribution; it never changes the answer. Empty = provider default',
+    kind: 'string',
+    allowEmpty: true,
+    envVar: 'PI_SYSTEM_ONE_TEMPERATURE',
   },
 ];
 
@@ -239,6 +271,9 @@ export function coerceSetting(
   spec: SettingSpec,
   raw: unknown,
 ): SystemOneSettings[SettingKey] | undefined {
+  if (typeof raw === 'string' && spec.retiredValues?.includes(raw.trim().toLowerCase())) {
+    return undefined;
+  }
   switch (spec.kind) {
     case 'boolean':
       return parseBoolean(raw);
@@ -253,8 +288,11 @@ export function coerceSetting(
 
     case 'string': {
       if (typeof raw !== 'string') return undefined;
-      const trimmed = raw.trim();
+      let trimmed = raw.trim();
       if (trimmed === '' && !spec.allowEmpty) return undefined;
+      if (spec.lowercase) trimmed = trimmed.toLowerCase();
+      if (trimmed !== '' && spec.retiredValues?.includes(trimmed)) return undefined;
+      if (spec.pattern && trimmed !== '' && !spec.pattern.test(trimmed)) return undefined;
       return trimmed;
     }
   }
@@ -320,11 +358,11 @@ export function effectiveLegacyInputs(
   masters: readonly MasterSwitch[] = MASTER_SWITCHES,
 ): string[] {
   const inputs = new Set<string>();
-  // These provider inputs are consumed directly by SystemOneClient rather than represented
-  // as editable settings, but status still needs to disclose their effective legacy aliases.
+  // These inputs are consumed directly by SystemOneClient rather than represented as
+  // editable settings, but status still needs to disclose their effective legacy aliases.
   for (const [canonicalName, legacyName] of [
+    ['PI_SYSTEM_ONE_BASE_URL', 'PI_JEV_BASE_URL'],
     ['PI_SYSTEM_ONE_API_KEY', 'PI_JEV_API_KEY'],
-    ['PI_SYSTEM_ONE_SECRETS_DIR', 'PI_JEV_SECRETS_DIR'],
   ] as const) {
     if (!env[canonicalName]?.trim() && env[legacyName]?.trim()) inputs.add(`$${legacyName}`);
   }

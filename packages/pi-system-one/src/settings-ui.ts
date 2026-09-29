@@ -8,8 +8,13 @@ import {
   truncateToWidth,
   type SettingItem,
 } from '@earendil-works/pi-tui';
-import type { SystemOneClient } from './system-one.js';
+import type {
+  ClassifierModelInfo,
+  SystemOneClient,
+  SystemOneProviderInfo,
+} from './system-one.js';
 import {
+  PROVIDER_VALUES,
   SETTING_SPECS,
   coerceSetting,
   getSpec,
@@ -148,7 +153,7 @@ export class TestConnectivitySubmenu {
         state: { message: 'Payment processing failed due to credit card expiration.' },
         questions: {
           is_billing: {
-            type: 'noul',
+            type: 'bool',
             instructions: 'Is this message related to a billing issue?',
           },
         },
@@ -164,11 +169,10 @@ export class TestConnectivitySubmenu {
       ];
       this.report?.('success', `Connected to ${response.model}.`);
     } catch (error) {
-      const provider = this.systemOneClient.getProviderInfo();
-      const hint =
-        provider?.provider === 'laya'
-          ? 'Check that laya-serve is running and the Base URL omits /v1.'
-          : 'Check the key source and provider in the Provider tab.';
+      const provider = await this.systemOneClient.getProviderInfo();
+      const hint = provider
+        ? `Check auth with /login ${provider.provider}, or load a local model with /llama.`
+        : 'Sign in with /login <provider>, or load a local model with /llama.';
       this.lines = [
         this.ui.error('Failed.'),
         `  ${(error as { message?: string } | undefined)?.message ?? String(error)}`,
@@ -196,67 +200,195 @@ export class TestConnectivitySubmenu {
   }
 }
 
-/** Read Laya's lightweight health route; this does not perform model inference. */
-export class LayaHealthSubmenu {
-  private lines: string[];
+/** The classifier catalog and current selection, loaded once when the editor opens. */
+export interface ProviderCatalog {
+  models: ClassifierModelInfo[];
+  info: SystemOneProviderInfo | null;
+}
 
-  constructor(
-    private systemOneClient: SystemOneClient,
-    private ui: SettingsUiTheme,
-    private done: SubmenuDone,
-    requestRender: () => void,
-    private report?: (kind: FeedbackKind, message: string) => void,
-  ) {
-    this.lines = [this.ui.warning('Checking Laya server…')];
-    void this.run(requestRender);
+/** Load everything the provider picker and the auth row need, in one snapshot. */
+export async function loadProviderCatalog(client: SystemOneClient): Promise<ProviderCatalog> {
+  const [models, info] = await Promise.all([client.listAvailable(), client.getProviderInfo()]);
+  return { models, info };
+}
+
+/** One pickable classifier, or an unavailable provider shown with its remedy. */
+export interface ProviderOption {
+  /** Setting value: a pi provider id, or `auto`. */
+  provider: string;
+  /** The classifier id selected alongside the provider, when this is a catalog entry. */
+  model?: string;
+  name: string;
+  /** The wire protocol, e.g. `typesafe-system-one` or `llama-cpp-classify`. */
+  api?: string;
+  /** False when the provider has no working credentials. */
+  selectable: boolean;
+  /** How to make an unavailable entry work, e.g. `run /login openrouter`. */
+  remedy?: string;
+}
+
+/** Catalog entries for one provider, plus providers that still need signing in. */
+export interface ProviderGroup {
+  provider: string;
+  label: string;
+  options: ProviderOption[];
+}
+
+/**
+ * Group the catalog by provider. A provider with no working credentials is still
+ * listed — from the documented provider list, or from the current pin — so it is
+ * visible with a remedy rather than silently dropped.
+ */
+export function buildProviderGroups(catalog: ProviderCatalog): ProviderGroup[] {
+  const groups = new Map<string, ProviderGroup>();
+  const groupFor = (provider: string, label: string): ProviderGroup => {
+    const existing = groups.get(provider);
+    if (existing) return existing;
+    const created: ProviderGroup = { provider, label, options: [] };
+    groups.set(provider, created);
+    return created;
+  };
+
+  for (const model of catalog.models) {
+    groupFor(model.provider, model.provider).options.push({
+      provider: model.provider,
+      model: model.id,
+      name: model.name,
+      api: model.api,
+      selectable: true,
+    });
   }
 
-  private async run(requestRender: () => void): Promise<void> {
-    try {
-      const result = await this.systemOneClient.checkLayaHealth();
-      this.lines = [
-        this.ui.success('Healthy.'),
-        `  endpoint: ${result.endpoint}`,
-        `  loaded:   ${result.loaded.length ? result.loaded.join(', ') : 'none (lazy loading)'}`,
-        `  device:   ${result.device}`,
-        '',
-        this.ui.dim('  Use Test connectivity to verify inference.'),
-      ];
-      this.report?.('success', 'Laya health check passed.');
-    } catch (error) {
-      const hint =
-        this.systemOneClient.getProviderInfo()?.provider === 'laya'
-          ? 'Check that laya-serve is running and the Base URL omits /v1.'
-          : 'Select Laya as the provider to use this action.';
-      this.lines = [
-        this.ui.error('Failed.'),
-        `  ${(error as { message?: string } | undefined)?.message ?? String(error)}`,
-        '',
-        this.ui.dim(`  ${hint}`),
-      ];
-      this.report?.('error', 'Laya health check failed.');
-    }
-    requestRender();
+  // Providers pi knows about but the catalog cannot reach right now.
+  for (const provider of PROVIDER_VALUES) {
+    if (provider === 'auto' || groups.has(provider)) continue;
+    groupFor(provider, provider).options.push({
+      provider,
+      name: provider,
+      selectable: false,
+      remedy: `run /login ${provider}`,
+    });
+  }
+
+  // A pin that is not in the catalog (no credentials yet, or a local router with no
+  // model loaded) stays visible so the selection is never silently changed.
+  const info = catalog.info;
+  if (info && info.provider !== 'auto' && !groups.has(info.provider)) {
+    const local = info.api === 'llama-cpp-classify';
+    groupFor(info.provider, info.label).options.push({
+      provider: info.provider,
+      model: info.model,
+      name: info.model,
+      api: info.api,
+      selectable: info.auth === 'ok',
+      remedy: local ? 'load a model with /llama' : `run /login ${info.provider}`,
+    });
+  }
+
+  const auto: ProviderGroup = {
+    provider: 'auto',
+    label: 'Auto',
+    options: [
+      { provider: 'auto', name: 'Use every available classifier', selectable: true },
+    ],
+  };
+  return [auto, ...groups.values()];
+}
+
+/**
+ * Grouped classifier picker. Unavailable entries stay in the list but cannot be chosen;
+ * pressing Enter on them shows the remedy instead.
+ */
+export class ProviderSubmenu {
+  private cursor = 0;
+  private message: string | undefined;
+  private readonly options: ProviderOption[];
+
+  constructor(
+    private readonly groups: ProviderGroup[],
+    private readonly currentProvider: string,
+    private readonly ui: SettingsUiTheme,
+    private readonly done: SubmenuDone,
+    private readonly choose: (option: ProviderOption) => void,
+  ) {
+    this.options = groups.flatMap((group) => group.options);
+    const current = this.options.findIndex(
+      (option) => option.selectable && option.provider === currentProvider,
+    );
+    if (current >= 0) this.cursor = current;
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) this.done();
+    if (matchesKey(data, Key.enter)) {
+      const option = this.options[this.cursor];
+      if (option?.selectable) {
+        this.choose(option);
+        this.done();
+      } else if (option) {
+        this.message = `${option.name} is not ready — ${option.remedy ?? 'unavailable'}.`;
+      } else {
+        this.done();
+      }
+      return;
+    }
+    if (matchesKey(data, Key.escape)) {
+      this.done();
+      return;
+    }
+    if (matchesKey(data, Key.up)) {
+      this.cursor = this.cursor === 0 ? this.options.length - 1 : this.cursor - 1;
+      this.message = undefined;
+    } else if (matchesKey(data, Key.down)) {
+      this.cursor = this.cursor === this.options.length - 1 ? 0 : this.cursor + 1;
+      this.message = undefined;
+    }
   }
 
   render(width: number): string[] {
-    return [
-      truncateToWidth(this.ui.bold('Actions · Check Laya health'), width),
-      ...this.lines.map((line) => truncateToWidth(line, width)),
-    ];
+    const lines = [this.ui.accent(this.ui.bold('Classifier · Provider'))];
+    const catalogued = this.options.filter(
+      (option) => option.selectable && option.provider !== 'auto',
+    ).length;
+    if (catalogued === 0) {
+      lines.push(
+        this.ui.warning(
+          '  No classifier is available. Sign in with /login <provider>, or load one with /llama.',
+        ),
+      );
+    }
+    for (const group of this.groups) {
+      if (group.options.length === 0) continue;
+      lines.push(this.ui.dim(`  ${group.label} (${group.provider})`));
+      for (const option of group.options) {
+        const selected = option === this.options[this.cursor];
+        const marker = selected ? '› ' : '  ';
+        const name = option.model ? `${option.name} [${option.model}]` : option.name;
+        const api = option.api ? ` · ${option.api}` : '';
+        const current = option.provider === this.currentProvider ? ' (current)' : '';
+        if (option.selectable) {
+          const text = `${marker}${name}${api}${current}`;
+          lines.push(selected ? this.ui.accent(text) : text);
+        } else {
+          lines.push(
+            this.ui.muted(`${marker}${name}`) +
+              this.ui.dim(`${api}${current} — ${option.remedy ?? 'unavailable'}`),
+          );
+        }
+      }
+    }
+    if (this.message) lines.push('', this.ui.warning(`  ${this.message}`));
+    lines.push('', this.ui.dim('  ↑/↓ move · Enter select · Esc cancel'));
+    return lines.map((line) => truncateToWidth(line, width));
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    /* no cached state */
+  }
 }
 
-function maskedKey(provider: ReturnType<SystemOneClient['getProviderInfo']>): string {
-  if (!provider) return '(unset)';
-  if (provider.authMode === 'none') return 'not required (local endpoint)';
-  return provider.keyOrigin ? `•••••••• (from ${provider.keyOrigin})` : '(unset)';
+/** Short, secret-free auth label for the read-only auth row. */
+function authStatusLabel(info: SystemOneProviderInfo | null): string {
+  return info ? info.auth : 'not configured';
 }
 
 /** Build the SettingsList rows from the draft, plus read-only status and diagnostics. */
@@ -267,6 +399,7 @@ export function buildSettingItems(
   requestRender: () => void,
   report: Feedback = () => {},
   draft: SystemOneSettings = settings.values,
+  catalog: ProviderCatalog = { models: [], info: null },
 ): SettingItem[] {
   const resolved: ResolvedSettings = settings.resolvedSettings;
   const items: SettingItem[] = [];
@@ -279,6 +412,30 @@ export function buildSettingItems(
       label,
       description: `${spec.description} · Source: ${resolved.provenance[spec.key]}`,
     };
+
+    if (spec.key === 'provider') {
+      items.push({
+        ...shared,
+        currentValue: String(value),
+        submenu: (_current, done) =>
+          new ProviderSubmenu(
+            buildProviderGroups(catalog),
+            String(draft.provider),
+            ui,
+            done,
+            (option) => {
+              draft.provider = option.provider;
+              if (option.model) draft.model = option.model;
+              report(
+                'warning',
+                `${spec.label}: ${option.provider}${option.model ? `/${option.model}` : ''} · unsaved.`,
+              );
+              requestRender();
+            },
+          ),
+      });
+      continue;
+    }
 
     if (spec.kind === 'boolean') {
       items.push({ ...shared, currentValue: value ? 'on' : 'off', values: ['on', 'off'] });
@@ -305,32 +462,30 @@ export function buildSettingItems(
     });
   }
 
-  const provider = systemOneClient.getProviderInfo();
+  const info = catalog.info;
   const paths = settings.paths();
 
   items.push({
-    id: 'status.apiKey',
-    label: 'API key',
-    description: 'Read-only. Keys are never written to config files or session entries.',
-    currentValue: maskedKey(provider),
-    submenu: (_current, done) => {
-      const currentProvider = systemOneClient.getProviderInfo();
-      return new InfoSubmenu(
-        ui.accent(ui.bold('Provider · API key')),
+    id: 'status.auth',
+    label: 'Auth status',
+    description: 'Read-only. pi owns credentials; this package never reads or stores a key.',
+    currentValue: authStatusLabel(info),
+    submenu: (_current, done) =>
+      new InfoSubmenu(
+        ui.accent(ui.bold('Classifier · Auth status')),
         [
-          `  provider:     ${currentProvider?.provider ?? '(unconfigured)'}`,
-          `  base URL:     ${currentProvider?.baseURL ?? '—'}`,
-          `  model:        ${currentProvider?.model ?? '—'}`,
-          `  auth:         ${currentProvider ? (currentProvider.authMode === 'none' ? 'not required (local endpoint)' : 'bearer') : '—'}`,
-          `  key source:   ${currentProvider?.keyOrigin ?? (currentProvider?.authMode === 'none' ? 'not required' : '(unset)')}`,
+          `  provider:     ${info?.provider ?? '(unconfigured)'}`,
+          `  label:        ${info?.label ?? '—'}`,
+          `  model:        ${info?.model ?? '—'}`,
+          `  api:          ${info?.api ?? '—'}`,
+          `  auth:         ${info?.auth ?? 'not configured'}`,
+          `  selection:    ${info?.source ?? '—'}`,
           '',
-          ui.dim('  Set a key via TYPESAFE_API_KEY, OPENROUTER_API_KEY, or LAYA_API_KEY,'),
-          ui.dim('  or a file in ~/.pi/agent/secrets/.'),
-          ui.dim('  Keys are never persisted by this TUI.'),
+          ui.dim("  Auth is pi's: run /login <provider>, set the provider env var,"),
+          ui.dim('  or load a local model with /llama. No key is read or shown here.'),
         ],
         done,
-      );
-    },
+      ),
   });
 
   items.push({
@@ -339,24 +494,19 @@ export function buildSettingItems(
     description: 'Live counters and where each setting came from',
     currentValue: `${systemOneClient.stats.requestsCount} req`,
     submenu: (_current, done) => {
-      const currentProvider = systemOneClient.getProviderInfo();
-      const currentHealth = systemOneClient.getLayaHealthStatus?.();
       const currentResolved = settings.resolvedSettings;
       return new InfoSubmenu(
         ui.accent(ui.bold('Status · Session')),
         [
           `  configured:  ${systemOneClient.isConfigured() ? 'yes' : 'no'}`,
-          `  provider:    ${currentProvider?.provider ?? '—'}`,
-          `  model:       ${currentProvider?.model ?? '—'}`,
+          `  provider:    ${info?.provider ?? '—'}`,
+          `  model:       ${info?.model ?? '—'}`,
+          `  api:         ${info?.api ?? '—'}`,
+          `  auth:        ${info?.auth ?? 'not configured'}`,
           `  requests:    ${systemOneClient.stats.requestsCount}`,
           `  tokens:      ${systemOneClient.stats.totalTokens}`,
           `  cost:        ${systemOneClient.stats.totalCostUsd > 0 ? `$${systemOneClient.stats.totalCostUsd.toFixed(6)}` : 'n/a'}`,
           `  fallback (last request): ${systemOneClient.stats.fallback ? `${systemOneClient.stats.fallback.from} → ${systemOneClient.stats.fallback.to}` : 'none'}`,
-          ...(currentProvider?.provider === 'laya'
-            ? [
-                `  health (last check): ${currentHealth?.result ? 'healthy' : (currentHealth?.error ?? 'not checked')}`,
-              ]
-            : []),
           '',
           ui.dim('  Effective values (layer):'),
           ...SETTING_SPECS.map(
@@ -373,15 +523,6 @@ export function buildSettingItems(
   });
 
   items.push({
-    id: 'action.layaHealth',
-    label: 'Check Laya health',
-    description: 'GET /health on the selected Laya endpoint; no inference request',
-    currentValue: 'run',
-    submenu: (_current, done) =>
-      new LayaHealthSubmenu(systemOneClient, ui, done, requestRender, report),
-  });
-
-  items.push({
     id: 'action.test',
     label: 'Test connectivity',
     description: 'Send one System One request to the configured provider',
@@ -393,13 +534,13 @@ export function buildSettingItems(
   return items;
 }
 
-type SettingsTab = 'Modes' | 'Provider' | 'Status' | 'Actions';
-const TABS: readonly SettingsTab[] = ['Modes', 'Provider', 'Status', 'Actions'];
+type SettingsTab = 'Modes' | 'Classifier' | 'Status' | 'Actions';
+const TABS: readonly SettingsTab[] = ['Modes', 'Classifier', 'Status', 'Actions'];
 
 function tabForItem(id: string): SettingsTab {
   if (id.startsWith('action.')) return 'Actions';
   if (id === 'status.session') return 'Status';
-  if (id === 'status.apiKey') return 'Provider';
+  if (id === 'status.auth') return 'Classifier';
   return SETTING_SPECS.find((spec) => spec.key === id)?.group ?? 'Status';
 }
 
@@ -410,6 +551,8 @@ export function registerSystemOneSettingsCommand(
   systemOneClient: SystemOneClient,
 ): void {
   const handler = async (_args: string, ctx: ExtensionCommandContext) => {
+    // The catalog is async; load it once so the list renders from a stable snapshot.
+    const catalog = await loadProviderCatalog(systemOneClient);
     await ctx.ui.custom<void>(
       (tui, theme, _keybindings, done) => {
         const ui = settingsUiTheme(theme);
@@ -457,6 +600,7 @@ export function registerSystemOneSettingsCommand(
           () => tui.requestRender(),
           report,
           draft,
+          catalog,
         );
         const rowsByTab = new Map(
           TABS.map((tab) => [tab, items.filter((item) => tabForItem(item.id) === tab)]),
@@ -517,7 +661,7 @@ export function registerSystemOneSettingsCommand(
               formatSettingValue(draft[spec.key]),
             );
           }
-          lists[1].updateValue('status.apiKey', maskedKey(systemOneClient.getProviderInfo()));
+          lists[1].updateValue('status.auth', authStatusLabel(catalog.info));
           lists[2].updateValue('status.session', `${systemOneClient.stats.requestsCount} req`);
         };
 

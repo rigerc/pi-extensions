@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AutoSystemOne } from '../src/auto.js';
-import { SYSTEM_ONE_THRESHOLD } from '../src/skills.js';
+import { AutoSystemOne, formatAutoSkillMessage } from '../src/auto.js';
+import { SKILL_PRIMARY_QUESTION_ID, SYSTEM_ONE_THRESHOLD } from '../src/skills.js';
 import type { SystemOneClient } from '../src/system-one.js';
 import type { ToolRouter } from '../src/router.js';
 import type { SkillRouter } from '../src/skills.js';
@@ -31,22 +31,27 @@ function stubs(
     evaluate: async (request: any) => {
       calls.requests += 1;
       requests.push(request);
+      const ids = Object.keys(request.questions);
+      // Count a path as judged when its questions travelled, not when its result was read:
+      // one widening request may carry one path and not the other.
+      if (ids.some((id) => id.startsWith('tool__'))) calls.tools += 1;
+      if (ids.some((id) => id.startsWith('skill__') || id === SKILL_PRIMARY_QUESTION_ID)) {
+        calls.skills += 1;
+      }
       return {
         answers: Object.fromEntries(
-          Object.keys(request.questions).map((id) => [
-            id,
-            {
-              type: 'noul',
-              value:
-                id === 'coverage__tool'
-                  ? toolSufficient
-                  : id === 'coverage__skill'
-                    ? skillSufficient
-                    : id.includes('docker_logs')
-                      ? 0.9
-                      : 0.8,
-            },
-          ]),
+          ids.map((id) => {
+            if (id === SKILL_PRIMARY_QUESTION_ID) {
+              const winner = Object.keys(request.questions[id].criteria)[1] ?? 'none';
+              return [
+                id,
+                { type: 'choice', value: winner, distribution: { [winner]: 0.9 } },
+              ];
+            }
+            if (id === 'coverage__tool') return [id, { type: 'noul', value: toolSufficient }];
+            if (id === 'coverage__skill') return [id, { type: 'noul', value: skillSufficient }];
+            return [id, { type: 'noul', value: id.includes('docker_logs') ? 0.9 : 0.8 }];
+          }),
         ),
         model: 'jev-latest',
         elapsedMs: 1,
@@ -67,7 +72,6 @@ function stubs(
       threshold: number,
       names: string[],
     ) => {
-      calls.tools += 1;
       thresholds.push(threshold);
       return names.filter((name) => (probabilities[name] ?? 0) >= threshold);
     },
@@ -81,21 +85,61 @@ function stubs(
       limit = 12,
       exclude?: ReadonlySet<string>,
     ) => skills.filter((s) => !(exclude?.has(s.name) ?? false)).slice(0, limit),
-    applyRecommendations: (
-      probabilities: Record<string, number>,
-      threshold: number,
-      candidates: Array<{ name: string; description: string }>,
-    ) => {
-      calls.skills += 1;
-      thresholds.push(threshold);
-      return candidates
-        .map((c) => ({ ...c, probability: probabilities[c.name] ?? 0 }))
-        .filter((c) => c.probability >= threshold);
-    },
   } as unknown as SkillRouter;
 
   return { systemOneClient, router, skillRouter, calls, thresholds, requests };
 }
+
+test('formatAutoSkillMessage states one primary and marks the runner-ups as conditional', () => {
+  const content = formatAutoSkillMessage([
+    { name: 'jev', probability: 0.5, role: 'primary' },
+    { name: 'typesafe-ai', probability: 0.84, role: 'runner-up' },
+    { name: 'pi', probability: 0.76, role: 'runner-up' },
+  ]);
+
+  assert.ok(content);
+  const lines = content.split('\n');
+  assert.match(lines[1], /^• \/skill:jev \(P=0\.50\)$/);
+  assert.match(content, /Alternatives, only if the primary does not fit:/);
+  assert.match(content, /• \/skill:typesafe-ai \(relevance=0\.84\)/);
+});
+
+test('formatAutoSkillMessage injects nothing when no primary was chosen', () => {
+  assert.equal(formatAutoSkillMessage([]), null);
+  assert.equal(
+    formatAutoSkillMessage([{ name: 'tdd', probability: 0.8, role: 'runner-up' }]),
+    null,
+    'a runner-up without a primary must never be injected on its own',
+  );
+});
+
+test('AutoSystemOne abstains when the model chooses none', async () => {
+  // The whole point of the primary Choice: a prompt that needs no skill gets nothing, even
+  // when individual candidates score well on their own questions.
+  const systemOneClient = {
+    isConfigured: () => true,
+    evaluate: async (request: any) => ({
+      answers: Object.fromEntries(
+        Object.keys(request.questions).map((id) =>
+          id === SKILL_PRIMARY_QUESTION_ID
+            ? [id, { type: 'choice', value: 'none', distribution: { none: 0.7, tdd: 0.3 } }]
+            : [id, { type: 'noul', value: 0.95 }],
+        ),
+      ),
+      model: 'jev-latest',
+      elapsedMs: 1,
+    }),
+  } as unknown as SystemOneClient;
+  const { router, skillRouter } = stubs();
+
+  const result = await new AutoSystemOne(systemOneClient, router, skillRouter, false, true).route(
+    'inspect docker logs',
+  );
+
+  assert.equal(result.ran, true);
+  assert.deepEqual(result.skills, [], 'a high per-candidate Noul must not override the choice');
+  assert.equal(formatAutoSkillMessage(result.skills), null);
+});
 
 test('AutoSystemOne stays off until enabled', async () => {
   const { systemOneClient, router, skillRouter, calls } = stubs();
@@ -127,7 +171,7 @@ test('AutoSystemOne routes tools and skills in one Jev request', async () => {
   const result = await auto.route('write tests for docker logs');
   assert.equal(result.ran, true);
   assert.deepEqual(result.activated, ['docker_logs']);
-  assert.deepEqual(result.skills, [{ name: 'tdd', probability: 0.8 }]);
+  assert.deepEqual(result.skills, [{ name: 'tdd', probability: 0.9, role: 'primary' }]);
   assert.equal(calls.requests, 1, 'one prompt spends exactly one Jev request');
   assert.equal(result.escalated, false, 'a sufficient shortlist never widens');
   assert.deepEqual(result.widened, { tools: false, skills: false });
@@ -137,6 +181,7 @@ test('AutoSystemOne routes tools and skills in one Jev request', async () => {
     'coverage__skill',
     'coverage__tool',
     'skill__tdd',
+    'skill_primary',
     'tool__docker_logs',
   ]);
   assert.equal(
@@ -200,7 +245,7 @@ test('AutoSystemOne keeps first-pass results when the widening pass fails', asyn
   const { router, skillRouter } = stubs(true, { tools });
 
   const result = await new AutoSystemOne(systemOneClient, router, skillRouter, true, false).route(
-    'docker',
+    'inspect docker logs',
   );
   assert.equal(result.ran, true);
   assert.equal(result.escalated, false);
@@ -212,8 +257,10 @@ test('AutoSystemOne ignores slash commands and concurrent prompts, and never thr
   const { systemOneClient, router, skillRouter } = stubs();
   const auto = new AutoSystemOne(systemOneClient, router, skillRouter, true);
 
-  assert.equal((await auto.route('/system-one status')).reason, 'empty-prompt');
+  assert.equal((await auto.route('/system-one status')).reason, 'slash-command');
   assert.equal((await auto.route('   ')).reason, 'empty-prompt');
+  assert.equal((await auto.route('looks good to me')).reason, 'stall');
+  assert.equal((await auto.route('fix it')).reason, 'too-short');
 
   const failing = new AutoSystemOne(
     {
@@ -226,7 +273,7 @@ test('AutoSystemOne ignores slash commands and concurrent prompts, and never thr
     skillRouter,
     true,
   );
-  const failed = await failing.route('anything');
+  const failed = await failing.route('inspect docker logs');
   assert.equal(failed.ran, false);
   assert.equal(failed.reason, 'error');
 
@@ -249,8 +296,8 @@ test('AutoSystemOne ignores slash commands and concurrent prompts, and never thr
     },
   } as unknown as SystemOneClient;
   const slow = new AutoSystemOne(slowClient, router, skillRouter, true);
-  const first = slow.route('first');
-  const second = await slow.route('second');
+  const first = slow.route('inspect docker logs');
+  const second = await slow.route('inspect docker logs again');
   assert.equal(second.reason, 'busy');
   release();
   assert.equal((await first).ran, true);
@@ -284,10 +331,14 @@ test('AutoSystemOne routes only skills when the tool path is off', async () => {
   assert.equal(result.toolRouting, false);
   assert.equal(result.skillRouting, true);
   assert.deepEqual(result.activated, []);
-  assert.deepEqual(result.skills, [{ name: 'tdd', probability: 0.8 }]);
+  assert.deepEqual(result.skills, [{ name: 'tdd', probability: 0.9, role: 'primary' }]);
   assert.equal(calls.tools, 0, 'the disabled path must spend no work');
   assert.equal(calls.requests, 1);
-  assert.deepEqual(Object.keys(requests[0].questions).sort(), ['coverage__skill', 'skill__tdd']);
+  assert.deepEqual(Object.keys(requests[0].questions).sort(), [
+    'coverage__skill',
+    'skill__tdd',
+    'skill_primary',
+  ]);
   assert.deepEqual(requests[0].state.tools, []);
 });
 
@@ -315,7 +366,7 @@ test('AutoSystemOne paths can be toggled independently', async () => {
   assert.equal(auto.tools, false);
   assert.equal(auto.skills, true);
 
-  await auto.route('anything');
+  await auto.route('inspect docker logs');
   assert.equal(calls.tools, 0, 'only the enabled path runs');
   assert.equal(calls.skills, 1);
   assert.equal(calls.requests, 1);
@@ -324,14 +375,15 @@ test('AutoSystemOne paths can be toggled independently', async () => {
   assert.equal(auto.anyEnabled, false, 'setEnabled remains a master switch for both');
 });
 
-test('auto mode spends one request and applies the shared activation threshold', async () => {
-  // Auto mode must use the same cutoff as the router and command defaults, and must
-  // not pay for a second request when both paths are on.
+test('auto mode spends one request and uses the tool activation cutoff for tools', async () => {
+  // Auto mode must not pay for a second request when both paths are on, and tool activation
+  // still uses the activation cutoff. Skill selection has its own thresholds now, so the two
+  // decisions no longer move together.
   const { systemOneClient, router, skillRouter, calls, thresholds } = stubs();
 
-  await new AutoSystemOne(systemOneClient, router, skillRouter, true).route('anything');
+  await new AutoSystemOne(systemOneClient, router, skillRouter, true).route('inspect docker logs');
   assert.equal(calls.requests, 1);
-  assert.deepEqual(thresholds, [SYSTEM_ONE_THRESHOLD, SYSTEM_ONE_THRESHOLD]);
+  assert.deepEqual(thresholds, [SYSTEM_ONE_THRESHOLD]);
 });
 
 test('AutoSystemOne widens only the path Jev judged incomplete', async () => {
@@ -345,14 +397,16 @@ test('AutoSystemOne widens only the path Jev judged incomplete', async () => {
   });
 
   const result = await new AutoSystemOne(systemOneClient, router, skillRouter, true, true).route(
-    'docker',
+    'inspect docker logs',
   );
 
   assert.equal(calls.requests, 2);
   assert.deepEqual(result.widened, { tools: true, skills: false });
   assert.equal(result.escalated, true);
   assert.deepEqual(
-    Object.keys(requests[1].questions).filter((id) => id.startsWith('skill__')),
+    Object.keys(requests[1].questions).filter(
+      (id) => id.startsWith('skill__') || id === SKILL_PRIMARY_QUESTION_ID,
+    ),
     [],
     'the sufficient skill path contributes no questions to the widening pass',
   );
@@ -369,7 +423,7 @@ test('AutoSystemOne widens skills alone when only the skill shortlist was incomp
   });
 
   const result = await new AutoSystemOne(systemOneClient, router, skillRouter, true, true).route(
-    'write tests',
+    'write unit tests',
   );
 
   assert.equal(calls.requests, 2);
@@ -392,7 +446,7 @@ test('AutoSystemOne widening never enables a disabled path', async () => {
 
   // Skills off: even the widening pass must carry no skill state or questions.
   const result = await new AutoSystemOne(systemOneClient, router, skillRouter, true, false).route(
-    'docker',
+    'inspect docker logs',
   );
 
   assert.equal(result.widened.skills, false);
@@ -400,7 +454,9 @@ test('AutoSystemOne widening never enables a disabled path', async () => {
   for (const request of requests) {
     assert.deepEqual(request.state.available_skills, []);
     assert.equal(
-      Object.keys(request.questions).some((id) => id.startsWith('skill__')),
+      Object.keys(request.questions).some(
+        (id) => id.startsWith('skill__') || id === SKILL_PRIMARY_QUESTION_ID,
+      ),
       false,
     );
   }

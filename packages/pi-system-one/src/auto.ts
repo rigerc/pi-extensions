@@ -3,7 +3,6 @@ import type { SystemOneClient } from './system-one.js';
 import { recentContextFrom } from './context.js';
 import {
   buildShortlistSufficiencyQuestion,
-  mergeRecommendations,
   readSufficiency,
   shortlistQuestionId,
 } from './escalation.js';
@@ -17,14 +16,41 @@ import {
 import {
   SYSTEM_ONE_THRESHOLD,
   SKILL_CANDIDATE_LIMIT,
+  SKILL_PRIMARY_QUESTION_ID,
   SKILL_QUESTION_PREFIX,
+  buildSkillPrimaryQuestion,
   buildSkillRelevanceQuestions,
+  mergeSkillSelections,
+  selectSkills,
   type SkillMetadata,
   type SkillRouter,
+  type SkillChoiceAnswer,
+  type SkillSelection,
 } from './skills.js';
 import type { SystemOneAnswerResult, QuestionConfig } from './types.js';
+import {
+  DEFAULT_ROUTING_THRESHOLDS,
+  evaluatePromptHeuristics,
+  type RoutingThresholds,
+} from './thresholds.js';
 
-export type AutoSkipReason = 'disabled' | 'unconfigured' | 'busy' | 'empty-prompt' | 'error';
+export type AutoSkipReason =
+  | 'disabled'
+  | 'unconfigured'
+  | 'busy'
+  | 'empty-prompt'
+  | 'slash-command'
+  | 'too-short'
+  | 'stall'
+  | 'error';
+
+/** One skill the automatic path wants the agent to consider. */
+export interface AutoSkillSuggestion {
+  name: string;
+  probability: number;
+  /** `primary` is the single best pick; `runner-up` is a bounded alternative. */
+  role: 'primary' | 'runner-up';
+}
 
 export interface AutoRouteResult {
   ran: boolean;
@@ -34,12 +60,73 @@ export interface AutoRouteResult {
   /** Whether the skill-routing path ran for this prompt. */
   skillRouting: boolean;
   activated: string[];
-  skills: Array<{ name: string; probability: number }>;
+  /** At most one primary skill plus `maxRunnersUp` alternatives. */
+  skills: AutoSkillSuggestion[];
   elapsedMs: number;
   /** True when a shortlist was judged incomplete and a second request widened the search. */
   escalated: boolean;
   /** Which paths actually widened; both false means one request served the prompt. */
   widened: { tools: boolean; skills: boolean };
+}
+
+/** No candidates judged yet, so nothing was selected. */
+const EMPTY_SKILL_SELECTION: SkillSelection = {
+  primary: null,
+  runnersUp: [],
+  noneP: 0,
+  abstained: true,
+  abstainReason: 'no-answer',
+};
+
+/** Flatten a selection into the display shape, primary first. */
+function toSuggestions(selection: SkillSelection): AutoSkillSuggestion[] {
+  const suggestions: AutoSkillSuggestion[] = [];
+  if (selection.primary) {
+    suggestions.push({
+      name: selection.primary.name,
+      probability: selection.primary.probability,
+      role: 'primary',
+    });
+  }
+  for (const runnerUp of selection.runnersUp) {
+    suggestions.push({
+      name: runnerUp.name,
+      probability: runnerUp.probability,
+      role: 'runner-up',
+    });
+  }
+  return suggestions;
+}
+
+/**
+ * The injection text for the agent, or null when no skill was suggested.
+ *
+ * The primary is stated first and the alternatives are explicitly conditional, because the
+ * previous flat list read as "load all of these" and a runner-up is only useful when the
+ * primary does not apply.
+ */
+export function formatAutoSkillMessage(skills: AutoSkillSuggestion[]): string | null {
+  const primary = skills.find((skill) => skill.role === 'primary');
+  if (!primary) return null;
+
+  const lines = [`• /skill:${primary.name} (P=${primary.probability.toFixed(2)})`];
+  const runnerUps = skills.filter((skill) => skill.role === 'runner-up');
+  if (runnerUps.length > 0) {
+    // The primary carries the Choice probability; an alternative carries the judged
+    // relevance of its own Noul. Different measures, so they are named differently rather
+    // than printed as two comparable `P=` values.
+    lines.push(
+      'Alternatives, only if the primary does not fit:',
+      ...runnerUps.map(
+        (skill) => `• /skill:${skill.name} (relevance=${skill.probability.toFixed(2)})`,
+      ),
+    );
+  }
+
+  return (
+    'System One matched a skill for this task. Load its SKILL.md before proceeding:\n' +
+    lines.join('\n')
+  );
 }
 
 export { SYSTEM_ONE_THRESHOLD };
@@ -63,7 +150,7 @@ interface WidenFlags {
 
 interface CombinedPassResult {
   activated: string[];
-  skills: Array<{ name: string; probability: number }>;
+  skillSelection: SkillSelection;
   toolSufficient: boolean;
   skillSufficient: boolean;
   /** Candidates judged by this pass, per path; a path with none never widened. */
@@ -93,6 +180,9 @@ export function buildCombinedRequest(
   const questions: Record<string, QuestionConfig> = {
     ...buildToolRelevanceQuestions(toolCandidates, prompt, recentContext),
     ...buildSkillRelevanceQuestions(skillCandidates, prompt, recentContext),
+    ...(skillCandidates.length > 0
+      ? { [SKILL_PRIMARY_QUESTION_ID]: buildSkillPrimaryQuestion(skillCandidates) }
+      : {}),
     ...(toolCandidates.length > 0
       ? { [toolCoverageId]: buildShortlistSufficiencyQuestion('tool') }
       : {}),
@@ -117,10 +207,11 @@ export function readCombinedAnswers(
   answers: Record<string, SystemOneAnswerResult>,
   toolCandidates: ToolMetadata[],
   skillCandidates: SkillMetadata[],
-  threshold: number,
+  thresholds: RoutingThresholds,
 ): {
   toolProbabilities: Record<string, number>;
   skillProbabilities: Record<string, number>;
+  skillChoice: SkillChoiceAnswer | undefined;
   toolSufficient: boolean;
   skillSufficient: boolean;
 } {
@@ -133,17 +224,30 @@ export function readCombinedAnswers(
     skillProbabilities[s.name] = Number(answers[`${SKILL_QUESTION_PREFIX}${s.name}`]?.value ?? 0);
   }
 
+  const rawChoice = answers[SKILL_PRIMARY_QUESTION_ID];
+  const skillChoice =
+    rawChoice === undefined
+      ? undefined
+      : ({ value: rawChoice.value, distribution: rawChoice.distribution } as SkillChoiceAnswer);
+
   // Coverage is only asked for a path that had candidates, so a missing answer means
   // "sufficient" and never triggers a pointless retry.
   return {
     toolProbabilities,
     skillProbabilities,
+    skillChoice,
     toolSufficient:
       toolCandidates.length === 0 ||
-      readSufficiency(probabilityOf(answers[shortlistQuestionId('tool')]?.value), threshold),
+      readSufficiency(
+        probabilityOf(answers[shortlistQuestionId('tool')]?.value),
+        thresholds.coverageThreshold,
+      ),
     skillSufficient:
       skillCandidates.length === 0 ||
-      readSufficiency(probabilityOf(answers[shortlistQuestionId('skill')]?.value), threshold),
+      readSufficiency(
+        probabilityOf(answers[shortlistQuestionId('skill')]?.value),
+        thresholds.coverageThreshold,
+      ),
   };
 }
 
@@ -153,9 +257,10 @@ export function readCombinedAnswers(
  * Tool routing and skill routing keep independent switches, so a disabled path costs
  * nothing. Both enabled paths share one System One request: their questions read the same
  * prompt state and run in parallel inside a request, so a second request would only
- * add cost. When System One judges a path's local shortlist incomplete, one bounded widening
- * pass runs for that path alone. Both paths share `SYSTEM_ONE_THRESHOLD` so their
- * precision/recall stays aligned.
+ * Routing quality is bounded by the local shortlist, so both paths also ask a coverage Noul;
+ * when Jev judges a path's shortlist incomplete, one bounded widening pass runs for that path
+ * alone. Skill selection is bounded to one primary plus `maxRunnersUp` alternatives, and
+ * abstention is decided by the primary Choice rather than by a per-candidate threshold.
  */
 export class AutoSystemOne {
   private toolsEnabled: boolean;
@@ -168,6 +273,7 @@ export class AutoSystemOne {
     private skillRouter: SkillRouter,
     enabled = false,
     skillsEnabled?: boolean,
+    private thresholds: RoutingThresholds = DEFAULT_ROUTING_THRESHOLDS,
   ) {
     this.toolsEnabled = enabled;
     this.skillsEnabled = skillsEnabled ?? enabled;
@@ -248,7 +354,7 @@ export class AutoSystemOne {
     if (Object.keys(questions).length === 0) {
       return {
         activated: [],
-        skills: [],
+        skillSelection: EMPTY_SKILL_SELECTION,
         toolSufficient: true,
         skillSufficient: true,
         judged,
@@ -261,7 +367,7 @@ export class AutoSystemOne {
       response.answers,
       toolCandidates,
       skillCandidates,
-      SYSTEM_ONE_THRESHOLD,
+      this.thresholds,
     );
 
     const activated =
@@ -272,18 +378,16 @@ export class AutoSystemOne {
             toolCandidates.map((c) => c.name),
           )
         : [];
-    const skills =
+    // The primary Choice decides whether anything is loaded; the per-candidate values only
+    // rank the bounded runner-ups.
+    const skillSelection =
       this.skillsEnabled && skillCandidates.length > 0
-        ? this.skillRouter.applyRecommendations(
-            read.skillProbabilities,
-            SYSTEM_ONE_THRESHOLD,
-            skillCandidates,
-          )
-        : [];
+        ? selectSkills(read.skillChoice, read.skillProbabilities, skillCandidates, this.thresholds)
+        : EMPTY_SKILL_SELECTION;
 
     return {
       activated,
-      skills: skills.map((s) => ({ name: s.name, probability: s.probability })),
+      skillSelection,
       toolSufficient: read.toolSufficient,
       skillSufficient: read.skillSufficient,
       judged,
@@ -312,8 +416,11 @@ export class AutoSystemOne {
 
     if (!this.anyEnabled) return skip('disabled');
     if (this.running) return skip('busy');
-    if (!prompt || !prompt.trim() || prompt.trim().startsWith('/')) {
-      return skip('empty-prompt');
+    // The automatic path pays for a request per prompt, so cheap prompts that carry no
+    // routing signal are rejected locally instead.
+    const heuristic = evaluatePromptHeuristics(prompt ?? '');
+    if (heuristic.skip) {
+      return skip(heuristic.reason === 'empty' ? 'empty-prompt' : heuristic.reason);
     }
     if (!this.systemOneClient.isConfigured()) return skip('unconfigured');
 
@@ -321,7 +428,7 @@ export class AutoSystemOne {
     try {
       const first = await this.pass(prompt, ctx, signal, NO_EXCLUDE, { tools: true, skills: true });
       let activated = first.activated;
-      let skills = first.skills;
+      let skillSelection = first.skillSelection;
       let widened = { tools: false, skills: false };
 
       // Widen only the path(s) System One judged incomplete, so a tool-only shortfall never
@@ -336,10 +443,15 @@ export class AutoSystemOne {
         try {
           const second = await this.pass(prompt, ctx, signal, first.seen, widen);
           activated = [...new Set([...activated, ...second.activated])];
-          skills = mergeRecommendations(skills, second.skills).map((s) => ({
-            name: s.name,
-            probability: s.probability,
-          }));
+          if (second.judged.skills > 0) {
+            // Two passes produce two independent primary picks; the more probable wins and
+            // the other is demoted to a runner-up rather than dropped.
+            skillSelection = mergeSkillSelections(
+              skillSelection,
+              second.skillSelection,
+              this.thresholds,
+            );
+          }
           widened = {
             tools: widen.tools && second.judged.tools > 0,
             skills: widen.skills && second.judged.skills > 0,
@@ -354,7 +466,7 @@ export class AutoSystemOne {
         toolRouting: this.toolsEnabled,
         skillRouting: this.skillsEnabled,
         activated,
-        skills,
+        skills: toSuggestions(skillSelection),
         escalated: widened.tools || widened.skills,
         widened,
         elapsedMs: Date.now() - startTime,

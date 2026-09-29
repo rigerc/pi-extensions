@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { capState, SystemOneClient } from './system-one.js';
+import { capState, type SystemOneClient } from './system-one.js';
 import { describeUnconfigured } from './system-one.js';
 import type { SystemOneAnswerResult } from './types.js';
 
@@ -29,6 +29,9 @@ export interface GateOptions {
   file?: string;
   json?: boolean;
   failOpen?: boolean;
+  /** Classifier provider id (e.g. `typesafe`, `openrouter`). */
+  provider?: string;
+  /** Classifier model id (e.g. `jev-latest`). */
   model?: string;
 }
 
@@ -71,6 +74,8 @@ export function parseGateArgs(args: string[]): GateOptions {
       options.failOpen = true;
     } else if (arg === '-m' || arg === '--model') {
       options.model = args[++i];
+    } else if (arg === '--provider') {
+      options.provider = args[++i];
     } else if (arg === '-h' || arg === '--help') {
       printHelp();
       process.exit(0);
@@ -86,13 +91,13 @@ export function printHelp(): void {
   console.log(`
 Usage: system-one-gate [options] [criteria]
 
-Post-run gate check using typed System One evaluation (TypeSafe, OpenRouter, or local Laya).
-Exits with 0 if evaluation meets threshold, non-zero otherwise.
+Post-run gate check using pi's classifier models. Exits with 0 if evaluation
+meets threshold, non-zero otherwise.
 
-Provider credentials come from TYPESAFE_API_KEY or OPENROUTER_API_KEY
-(or ~/.pi/agent/secrets/{typesafe,openrouter}_api_key). Local Laya is keyless by
-default; select it with PI_SYSTEM_ONE_PROVIDER=laya and optionally set LAYA_API_KEY.
-PI_SYSTEM_ONE_API_KEY and PI_SYSTEM_ONE_BASE_URL are generic overrides.
+Classifier auth comes from pi, not this CLI: sign in with '/login <provider>'
+(typesafe, openrouter, cloudflare-workers-ai, vercel-ai-gateway, opencode) or
+load a local llama.cpp model with '/llama'. PI_SYSTEM_ONE_PROVIDER and
+PI_SYSTEM_ONE_MODEL select a classifier without flags.
 
 Options:
   -c, --criteria <text>      Acceptance criteria to check against output/diff
@@ -101,7 +106,8 @@ Options:
   -f, --file <path>          Read state from file
       --json                 Output result in JSON format
       --fail-open            Exit 0 even on API or config error
-  -m, --model <model>        Override System One model (default: jev-latest)
+      --provider <id>        Classifier provider (e.g. typesafe, openrouter)
+  -m, --model <id>           Classifier model id (e.g. jev-latest)
   -h, --help                 Show this help message
 
 Examples:
@@ -226,9 +232,8 @@ export function resolveGateState(options: GateOptions): string {
 
 export async function evaluateGate(
   options: GateOptions,
-  systemOneClient?: SystemOneClient,
+  client: SystemOneClient,
 ): Promise<GateResult> {
-  const client = systemOneClient ?? new SystemOneClient();
   const threshold = options.threshold ?? 0.7;
 
   if (!options.criteria.trim()) {
@@ -265,12 +270,17 @@ export async function evaluateGate(
     capped.truncatedItems > 0;
   const state = { ...(capped.value as Record<string, unknown>), truncated };
 
+  // `--provider` and `--model` both select the classifier through the client's layered
+  // overrides; routing the model through the request instead would drop the provider.
+  if (options.provider !== undefined || options.model !== undefined) {
+    client.setProviderOverrides({ provider: options.provider, model: options.model });
+  }
+
   const response = await client.evaluate({
     state,
-    model: options.model,
     questions: {
       gate_passed: {
-        type: 'noul',
+        type: 'bool',
         instructions: {
           question: 'Does `output` satisfy `criteria`?',
           note: 'Judge the output as given against the stated criteria only; do not infer requirements the criteria do not state. When `truncated` is true the output is incomplete, so answer no if the criteria depend on content that may have been cut.',

@@ -136,7 +136,6 @@ test('test_init_applies_settings_to_live_modes_tools_and_provider', () => {
 
     assert.deepEqual(h.providerOverrides.at(-1), {
       provider: 'openrouter',
-      baseURL: '',
       model: 'typesafe/jev-1.13',
     });
   } finally {
@@ -173,13 +172,27 @@ test('test_set_rejects_invalid_values_without_touching_state', () => {
   const h = makeSettingsHarness();
   try {
     h.service.init();
-    assert.equal(h.service.set('provider', 'anthropic'), false);
+    assert.equal(h.service.set('provider', 'not a provider!'), false);
+    assert.equal(h.service.set('provider', 'laya'), false, 'a removed provider is not accepted');
     assert.equal(h.service.set('model', ''), false);
     assert.equal(h.service.set('notARealSetting' as never, true), false);
 
     assert.equal(h.entries.length, 0, 'nothing persisted for rejected values');
     assert.equal(h.service.values.provider, 'auto');
     assert.ok(!fs.existsSync(h.pathFor('user')));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('test_set_accepts_a_well_formed_provider_outside_the_documented_list', () => {
+  const h = makeSettingsHarness();
+  try {
+    h.service.init();
+    // The provider set is pi's catalog, not this package's enum, so a provider this
+    // package never heard of must survive the settings layer and be resolved later.
+    assert.equal(h.service.set('provider', 'llama.cpp'), true);
+    assert.equal(h.service.values.provider, 'llama.cpp');
   } finally {
     h.cleanup();
   }
@@ -341,11 +354,11 @@ test('test_last_session_entry_wins_over_earlier_ones', () => {
   }
 });
 
-test('test_status_reports_values_provenance_provider_and_files', () => {
+test('test_status_reports_values_provenance_provider_and_files', async () => {
   const h = makeSettingsHarness({ user: { toolGuard: true } });
   try {
     h.service.init();
-    const status = h.service.status();
+    const status = await h.service.status();
 
     assert.equal(status.values.toolGuard, true);
     assert.equal(status.provenance.toolGuard, 'user');

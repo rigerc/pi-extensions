@@ -107,7 +107,7 @@ test('ToolRouter accepts a probability exactly at the shared threshold and rejec
         answers:
           value === undefined
             ? {}
-            : { [`${TOOL_QUESTION_PREFIX}sqlite_query`]: { type: 'noul', value } },
+            : { [`${TOOL_QUESTION_PREFIX}sqlite_query`]: { type: 'bool', value } },
         model: 'm',
         elapsedMs: 1,
       }),
@@ -201,7 +201,7 @@ test('ToolRouter widens once when coverage says the shortlist was incomplete', a
         answers: Object.fromEntries(
           Object.keys(request.questions).map((id) => [
             id,
-            { type: 'noul', value: id.startsWith('coverage__') ? 0.1 : 0.9 },
+            { type: 'bool', value: id.startsWith('coverage__') ? 0.1 : 0.9 },
           ]),
         ),
         model: 'jev-latest',
@@ -215,6 +215,7 @@ test('ToolRouter widens once when coverage says the shortlist was incomplete', a
   assert.equal(result.escalated, true);
   assert.equal(requests.length, 2);
   assert.equal(requests[0].state.tools.length, TOOL_CANDIDATE_LIMIT);
+  assert.equal(requests[0].questions[`${TOOL_QUESTION_PREFIX}tool_0`].type, 'bool');
   assert.deepEqual(
     requests[1].state.tools.map((t: any) => t.name),
     [`tool_${TOOL_CANDIDATE_LIMIT}`],
@@ -247,7 +248,7 @@ test('ToolRouter keeps first-pass verdicts when the widening pass fails', async 
         answers: Object.fromEntries(
           Object.keys(request.questions).map((id) => [
             id,
-            { type: 'noul', value: id.startsWith('coverage__') ? 0.02 : 0.9 },
+            { type: 'bool', value: id.startsWith('coverage__') ? 0.02 : 0.9 },
           ]),
         ),
         model: 'jev-latest',

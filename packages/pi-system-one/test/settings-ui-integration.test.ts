@@ -22,7 +22,7 @@ const SAVE = '\x13';
 const ANSI = /\x1b\[[0-9;]*m/g;
 const strip = (line: string): string => line.replace(ANSI, '');
 
-/** Row positions within the Modes and Provider tabs. */
+/** Row positions within the Modes and Classifier tabs. */
 const ROW = {
   autoToolRouting: 0,
   autoSkillRouting: 1,
@@ -32,8 +32,8 @@ const ROW = {
   compaction: 5,
   systemOneTools: 6,
   provider: 0,
-  baseURL: 1,
-  model: 2,
+  model: 1,
+  temperature: 2,
 };
 
 function goToTab(component: any, index: number): void {
@@ -81,27 +81,42 @@ function openSettings() {
   } as unknown as ModeControllers;
 
   const providerOverrides: Array<Record<string, unknown>> = [];
+  let listAvailableCalls = 0;
   const systemOneClient = {
     setProviderOverrides: (overrides: Record<string, unknown>) => {
       providerOverrides.push({ ...overrides });
     },
-    getProviderInfo: () => {
-      const isLaya = providerOverrides.at(-1)?.provider === 'laya';
-      return {
-        provider: isLaya ? 'laya' : 'openrouter',
-        label: isLaya ? 'Laya (local)' : 'OpenRouter',
-        baseURL: isLaya ? 'http://127.0.0.1:8000' : 'https://openrouter.ai/api',
-        model: 'jev-latest',
-        keyOrigin: isLaya ? null : '$OPENROUTER_API_KEY',
-        authMode: isLaya ? 'none' : 'bearer',
-      };
+    listAvailable: async () => {
+      listAvailableCalls += 1;
+      return [
+        {
+          provider: 'typesafe',
+          id: 'jev-latest',
+          name: 'Jev Latest',
+          api: 'typesafe-system-one',
+        },
+        {
+          provider: 'openrouter',
+          id: 'typesafe/jev-1.13',
+          name: 'Jev 1.13',
+          api: 'typesafe-system-one',
+        },
+      ];
     },
+    getProviderInfo: async () => ({
+      provider: 'typesafe',
+      label: 'TypeSafe',
+      model: 'jev-latest',
+      api: 'typesafe-system-one',
+      auth: 'ok',
+      source: 'settings',
+    }),
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
     isConfigured: () => true,
   } as unknown as SystemOneClient;
 
   const settings = new SettingsService(host, systemOneClient, modes, {
-    env: { OPENROUTER_API_KEY: 'test-key' },
+    env: {},
     userPath: path.join(dir, 'user.json'),
     projectPath: path.join(dir, 'project.json'),
   });
@@ -156,6 +171,7 @@ function openSettings() {
     commands,
     dir,
     activeTools: () => [...activeTools],
+    listAvailableCalls: () => listAvailableCalls,
     open: async () => {
       assert.ok(handler, 'system-one-settings must be registered');
       await handler!('', ctx);
@@ -172,7 +188,7 @@ test('test_system_one_settings_command_registers_and_renders_every_group', async
   const h = openSettings();
   try {
     const component = await h.open();
-    const text = component.render(90).map(strip).join('\n');
+    let text = component.render(90).map(strip).join('\n');
 
     assert.match(text, /pi-system-one settings/);
     assert.match(text, /\[Modes\]/);
@@ -181,14 +197,20 @@ test('test_system_one_settings_command_registers_and_renders_every_group', async
     assert.match(text, /Type to search/, 'search is enabled');
     assert.match(text, /Ctrl\+S Save/);
     assert.match(text, /Draft changes/);
+
     goToTab(component, 1);
-    assert.match(component.render(90).map(strip).join('\n'), /\[Provider\].*Base URL/s);
+    text = component.render(90).map(strip).join('\n');
+    assert.match(text, /\[Classifier\].*Temperature/s);
+    assert.match(text, /Auth status/);
+
     goToTab(component, 1);
     assert.match(component.render(90).map(strip).join('\n'), /\[Status\].*Session/s);
     goToTab(component, 1);
-    assert.match(component.render(90).map(strip).join('\n'), /\[Actions\].*Test connectivity/s);
-    assert.match(component.render(90).map(strip).join('\n'), /Check Laya health/);
+    const actions = component.render(90).map(strip).join('\n');
+    assert.match(actions, /\[Actions\].*Test connectivity/s);
+    assert.doesNotMatch(actions, /Check Laya health/);
     assert.equal(h.commands.has('jev-settings'), false);
+    assert.equal(h.listAvailableCalls(), 1, 'the catalog is loaded once when the editor opens');
   } finally {
     h.cleanup();
   }
@@ -206,9 +228,9 @@ test('test_tabs_keep_search_and_selection_and_shift_tab_moves_back', async () =>
     component.handleInput(TAB);
     for (const ch of 'model') component.handleInput(ch);
     output = component.render(80).map(strip).join('\n');
-    assert.match(output, /\[Provider\]/);
+    assert.match(output, /\[Classifier\]/);
     assert.match(output, /Model/);
-    assert.doesNotMatch(output, /Base URL/);
+    assert.doesNotMatch(output, /Temperature/);
 
     component.handleInput(SHIFT_TAB);
     output = component.render(80).map(strip).join('\n');
@@ -236,8 +258,8 @@ test('test_tab_does_not_leave_an_open_text_editor', async () => {
     component.handleInput(TAB);
     component.handleInput(SAVE);
     const output = component.render(80).map(strip).join('\n');
-    assert.match(output, /\[Provider\]/);
-    assert.match(output, /Provider · Base URL/);
+    assert.match(output, /\[Classifier\]/);
+    assert.match(output, /Classifier · Model/);
     assert.doesNotMatch(output, /\[Status\]/);
     assert.ok(!fs.existsSync(h.settings.paths().user));
     component.handleInput(ESCAPE);
@@ -412,58 +434,92 @@ test('test_system_one_tools_row_updates_the_active_tool_set', async () => {
   }
 });
 
-test('test_provider_row_cycles_through_the_allowed_values', async () => {
+test('test_provider_row_opens_the_catalog_and_selects_a_classifier', async () => {
   const h = openSettings();
   try {
     const component = await h.open();
     goToTab(component, 1);
     for (let i = 0; i < ROW.provider; i++) component.handleInput(DOWN);
 
-    component.handleInput(' ');
+    component.handleInput(ENTER);
+    const submenuText = component.render(90).map(strip).join('\n');
+    assert.match(submenuText, /Classifier · Provider/);
+    assert.match(submenuText, /Jev Latest \[jev-latest\]/);
+    assert.match(submenuText, /typesafe-system-one/);
+    assert.match(submenuText, /run \/login cloudflare-workers-ai/);
+
+    // The cursor starts on auto; the first entry is the typesafe classifier.
+    component.handleInput(DOWN);
+    component.handleInput(ENTER);
     assert.match(component.render(90).map(strip).join('\n'), /Provider\s+typesafe/);
-    component.handleInput(' ');
-    assert.match(component.render(90).map(strip).join('\n'), /Provider\s+openrouter/);
-    component.handleInput(' ');
     assert.equal(h.settings.values.provider, 'auto', 'live provider stays unchanged');
+
     component.handleInput(SAVE);
-    assert.equal(h.settings.values.provider, 'laya');
-    assert.deepEqual(h.providerOverrides.at(-1), {
-      provider: 'laya',
-      baseURL: '',
-      model: 'jev-latest',
-    });
-    const reopened = await h.open();
-    goToTab(reopened, 1);
-    const rendered = reopened.render(90).map(strip).join('\n');
-    assert.match(rendered, /API key\s+not required \(local endpoint\)/);
+    assert.equal(h.settings.values.provider, 'typesafe');
+    assert.equal(h.settings.values.model, 'jev-latest');
+    assert.deepEqual(h.providerOverrides.at(-1), { provider: 'typesafe', model: 'jev-latest' });
+    assert.deepEqual(h.appended.at(-1), { provider: 'typesafe' });
   } finally {
     h.cleanup();
   }
 });
 
-test('test_text_submenu_edits_base_url_through_the_real_input_component', async () => {
+test('test_provider_submenu_refuses_an_unauthenticated_entry_in_the_real_editor', async () => {
   const h = openSettings();
   try {
     const component = await h.open();
     goToTab(component, 1);
-    for (let i = 0; i < ROW.baseURL; i++) component.handleInput(DOWN);
+    component.handleInput(ENTER);
+    for (let i = 0; i < 3; i++) component.handleInput(DOWN);
+    component.handleInput(ENTER);
+    const output = component.render(90).map(strip).join('\n');
+    assert.match(output, /not ready — run \/login cloudflare-workers-ai/);
+    assert.equal(h.settings.values.provider, 'auto');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('test_text_submenu_edits_temperature_through_the_real_input_component', async () => {
+  const h = openSettings();
+  try {
+    const component = await h.open();
+    goToTab(component, 1);
+    for (let i = 0; i < ROW.temperature; i++) component.handleInput(DOWN);
     component.handleInput(ENTER);
 
     const submenuText = component.render(90).map(strip).join('\n');
-    assert.match(submenuText, /Provider · Base URL/);
+    assert.match(submenuText, /Classifier · Temperature/);
     assert.match(submenuText, /Enter keep edit · Esc cancel/);
 
-    for (const ch of 'https://example.test/api') component.handleInput(ch);
+    for (const ch of '1.5') component.handleInput(ch);
     component.handleInput(ENTER);
 
-    assert.equal(h.settings.values.baseURL, '', 'text edit remains in the draft');
+    assert.equal(h.settings.values.temperature, '', 'text edit remains in the draft');
     component.handleInput(SAVE);
-    assert.equal(h.settings.values.baseURL, 'https://example.test/api');
+    assert.equal(h.settings.values.temperature, '1.5');
     assert.equal(
-      (h.providerOverrides.at(-1) as Record<string, unknown>).baseURL,
-      'https://example.test/api',
+      (h.providerOverrides.at(-1) as Record<string, unknown>).temperature,
+      1.5,
+      'temperature is passed to the client as a number',
     );
-    assert.deepEqual(h.appended.at(-1), { baseURL: 'https://example.test/api' });
+    assert.deepEqual(h.appended.at(-1), { temperature: '1.5' });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('test_empty_temperature_means_provider_default_and_is_omitted_from_overrides', async () => {
+  const h = openSettings();
+  try {
+    const component = await h.open();
+    goToTab(component, 1);
+    for (let i = 0; i < ROW.temperature; i++) component.handleInput(DOWN);
+    component.handleInput(ENTER);
+    component.handleInput(ENTER); // keep the empty draft value
+    component.handleInput(SAVE);
+    assert.equal(h.settings.values.temperature, '');
+    assert.deepEqual(h.providerOverrides.at(-1), { provider: 'auto', model: 'jev-latest' });
   } finally {
     h.cleanup();
   }
@@ -486,13 +542,13 @@ test('test_escape_inside_a_submenu_closes_only_the_submenu', async () => {
   try {
     const component = await h.open();
     goToTab(component, 1);
-    for (let i = 0; i < ROW.baseURL; i++) component.handleInput(DOWN);
+    for (let i = 0; i < ROW.temperature; i++) component.handleInput(DOWN);
     component.handleInput(ENTER);
     component.handleInput(ESCAPE);
 
     assert.equal(h.closed(), 0, 'the overlay stays open');
-    assert.equal(h.settings.values.baseURL, '', 'no value was saved');
-    assert.match(component.render(90).map(strip).join('\n'), /Base URL/, 'back to the list');
+    assert.equal(h.settings.values.temperature, '', 'no value was saved');
+    assert.match(component.render(90).map(strip).join('\n'), /Temperature/, 'back to the list');
   } finally {
     h.cleanup();
   }

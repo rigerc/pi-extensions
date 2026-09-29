@@ -77,6 +77,7 @@ test("SystemOneCompactor judges Pi's prepared messages rather than the first bra
   assert.match(result.summary, /auth.ts:12/);
   assert.doesNotMatch(result.summary, /unrelated branch message/);
   assert.deepEqual(Object.keys(calls[0].questions), ['keep_1']);
+  assert.equal(calls[0].questions.keep_1.type, 'bool');
 });
 
 test('SystemOneCompactor falls back instead of dropping messages beyond its entry budget', async () => {

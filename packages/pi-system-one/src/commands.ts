@@ -10,7 +10,6 @@ import type { ToolGuard } from './tool-guard.js';
 import { designEvaluation } from './designer.js';
 import type { SystemOneEvaluationRequest } from './types.js';
 import { SYSTEM_ONE_TOOL_NAMES, isSystemOneTool } from './types.js';
-import { SYSTEM_ONE_THRESHOLD } from './skills.js';
 import { describeUnconfigured } from './system-one.js';
 import type { SettingsService } from './settings.js';
 import type { SettingKey } from './config.js';
@@ -75,14 +74,12 @@ export function registerSystemOneCommands(
     const sub = (tokens[0] ?? '').toLowerCase();
     const rest = tokens.slice(1).join(' ');
     const usage =
-      'Available options: /system-one status, /system-one health, /system-one skills [query], /system-one test [prompt], /system-one enable, /system-one disable, /system-one auto [on|off], /system-one auto-tools [on|off], /system-one auto-skills [on|off], /system-one auto-model [on|off], /system-one compact [on|off], /system-one auto-agents [on|off], /system-one tool-guard [on|off], /system-one agents [task], /system-one-settings';
+      'Available options: /system-one status, /system-one skills [query], /system-one test [prompt], /system-one enable, /system-one disable, /system-one auto [on|off], /system-one auto-tools [on|off], /system-one auto-skills [on|off], /system-one auto-model [on|off], /system-one compact [on|off], /system-one auto-agents [on|off], /system-one tool-guard [on|off], /system-one agents [task], /system-one-settings';
 
     if (sub === 'status' || sub === '') {
-      const info = systemOneClient.getProviderInfo();
-      const origin = info?.keyOrigin;
+      const info = await systemOneClient.getProviderInfo();
       const configured = systemOneClient.isConfigured();
       const stats = systemOneClient.stats;
-      const health = info?.provider === 'laya' ? systemOneClient.getLayaHealthStatus?.() : null;
       const activeTools = pi.getActiveTools();
       const allTools = pi.getAllTools();
       const activeSet = new Set(activeTools);
@@ -92,27 +89,15 @@ export function registerSystemOneCommands(
 
       const lines = [
         `System One Status:`,
-        `• Provider configured: ${
-          configured
-            ? origin
-              ? `Yes (from ${origin})`
-              : info?.authMode === 'none'
-                ? 'Yes (local endpoint; no key required)'
-                : 'Yes'
-            : 'No'
-        }`,
+        `• Provider configured: ${configured ? 'Yes' : 'No'}`,
         ...(info
           ? [
-              `• Selected provider: ${info.provider} (${info.baseURL})${layer('provider')}`,
-              `• Configured model: ${info.model}${layer('model')}`,
-              `• Authentication: ${info.authMode === 'none' ? 'not required' : 'bearer'}`,
+              `• Selected classifier: ${info.provider}/${info.model}${layer('model')}`,
+              `• Provider: ${info.label} (${info.api})${layer('provider')}`,
+              `• Authentication: ${info.auth}`,
+              `• Selection source: ${info.source}`,
             ]
-          : []),
-        ...(info?.provider === 'laya'
-          ? [
-              `• Laya health (last check): ${health?.result ? `healthy; ${health.result.loaded.length} model(s) loaded on ${health.result.device}` : health?.error ? `failed (${health.error})` : 'not checked; run /system-one health'}`,
-            ]
-          : []),
+          : [`• ${describeUnconfigured()}`]),
         `• Requests in session: ${stats.requestsCount}`,
         `• Total tokens used: ${stats.totalTokens}`,
         `• Cost (session): ${stats.totalCostUsd > 0 ? `$${stats.totalCostUsd.toFixed(6)}` : 'n/a'}`,
@@ -154,22 +139,6 @@ export function registerSystemOneCommands(
       return;
     }
 
-    if (sub === 'health') {
-      try {
-        const result = await systemOneClient.checkLayaHealth();
-        ctx.ui.notify(
-          `Laya healthy: ${result.endpoint}\nLoaded models: ${result.loaded.length ? result.loaded.join(', ') : 'none (lazy loading)'}\nDevice: ${result.device}\nThis checks the server route; use /system-one test to verify inference.`,
-          'info',
-        );
-      } catch (error) {
-        ctx.ui.notify(
-          `Laya health check failed: ${(error as Error)?.message ?? String(error)}`,
-          'error',
-        );
-      }
-      return;
-    }
-
     if (sub === 'help') {
       ctx.ui.notify(`System One commands:\n${usage}`, 'info');
       return;
@@ -181,7 +150,7 @@ export function registerSystemOneCommands(
         return;
       }
 
-      const providerLabel = systemOneClient.getProviderInfo()?.label ?? 'System One';
+      const providerLabel = (await systemOneClient.getProviderInfo())?.label ?? 'System One';
 
       // With a prompt: the active model designs the evaluation. Without one: fixed smoke test.
       let request: SystemOneEvaluationRequest;
@@ -203,7 +172,7 @@ export function registerSystemOneCommands(
           state: { message: 'Payment processing failed due to credit card expiration.' },
           questions: {
             is_billing: {
-              type: 'noul' as const,
+              type: 'bool' as const,
               instructions: 'Is this message related to a billing issue?',
             },
             category: {
@@ -229,7 +198,7 @@ export function registerSystemOneCommands(
             Object.entries(res.answers)
               .map(([id, ans]) => {
                 const value =
-                  ans.type === 'noul'
+                  ans.type === 'bool'
                     ? `${ans.value}${typeof ans.value === 'number' ? ` (${(ans.value * 100).toFixed(0)}% yes)` : ''}`
                     : `${ans.value}${ans.confidence !== undefined ? ` (confidence: ${ans.confidence})` : ''}`;
                 return `• ${id}: ${value}`;
@@ -256,17 +225,30 @@ export function registerSystemOneCommands(
       }
 
       ctx.ui.notify(`Searching skills for: "${query}"...`, 'info');
-      const res = await skillRouter.findSkills(query, SYSTEM_ONE_THRESHOLD, ctx);
-      if (res.recommended.length === 0) {
-        ctx.ui.notify(`No skills matched "${query}".`, 'info');
+      const res = await skillRouter.findSkills(query, {}, ctx);
+      if (!res.primary) {
+        ctx.ui.notify(
+          res.abstained && res.candidates.length > 0
+            ? res.abstainReason === 'none-won'
+              ? `No skill is needed for "${query}" (System One chose none).`
+              : `No skill was judged relevant for "${query}" (${res.abstainReason ?? 'no answer'}).`
+            : `No skills matched "${query}".`,
+          'info',
+        );
         return;
       }
 
+      const lines = [
+        `• /skill:${res.primary.name} (P=${res.primary.probability.toFixed(2)}) - ${res.primary.description}`,
+        ...res.runnersUp.map(
+          (r) =>
+            `• (alternative) /skill:${r.name} (relevance=${r.probability.toFixed(2)}) - ${r.description}`,
+        ),
+      ];
+
       ctx.ui.notify(
         `Matching skills for "${query}":\n` +
-          res.recommended
-            .map((r) => `• /skill:${r.name} (P=${r.probability.toFixed(2)}) - ${r.description}`)
-            .join('\n') +
+          lines.join('\n') +
           (res.fallbackUsed
             ? '\n(Note: System One unconfigured/offline — local keyword shortlist, probabilities are not System One judgments)'
             : ''),
@@ -422,7 +404,7 @@ export function registerSystemOneCommands(
 
   pi.registerCommand('system-one', {
     description:
-      'Manage System One integration (TypeSafe, OpenRouter, local Laya, or compatible models)',
+      'Manage System One classifier integration (TypeSafe, OpenRouter, llama.cpp, or compatible models)',
     handler,
   });
 }

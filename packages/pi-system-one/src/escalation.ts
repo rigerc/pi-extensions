@@ -1,10 +1,10 @@
-import type { NoulQuestionConfig } from './types.js';
+import type { BoolQuestionConfig } from './types.js';
 
 /**
  * Both built-in routers shortlist candidates locally before System One judges them, which
  * caps recall: a skill whose description shares no token with the prompt can never be
- * chosen, however obvious it is to a semantic judge. One extra Noul per enabled path
- * asks whether the shortlist was complete; only when the model answers no does a
+ * chosen, however obvious it is to a semantic judge. One extra bool question per enabled
+ * path asks whether the shortlist was complete; only when the model answers no does a
  * second bounded pass run over the candidates the first pass never saw. A prompt whose
  * shortlist is sufficient — the common case — still costs exactly one request.
  */
@@ -23,12 +23,12 @@ export function shortlistQuestionId(kind: 'tool' | 'skill'): string {
  * list is probably needed", which is the only signal that can recover a candidate the
  * local term-overlap shortlist dropped.
  */
-export function buildShortlistSufficiencyQuestion(kind: 'tool' | 'skill'): NoulQuestionConfig {
+export function buildShortlistSufficiencyQuestion(kind: 'tool' | 'skill'): BoolQuestionConfig {
   const list = kind === 'tool' ? '`tools`' : '`available_skills`';
   const noun = kind;
 
   return {
-    type: 'noul',
+    type: 'bool',
     instructions: {
       question: `Does ${list} list every ${noun} this \`task\` needs?`,
       inspect: list,

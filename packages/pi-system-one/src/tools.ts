@@ -7,6 +7,25 @@ import type { SkillRouter } from './skills.js';
 import type { QuestionConfig } from './types.js';
 import { SYSTEM_ONE_THRESHOLD } from './skills.js';
 
+/**
+ * One rendered skill line: name, judged score, path and description.
+ *
+ * The primary shows `P=` (its Choice probability) and an alternative shows `relevance=`
+ * (its own Noul), because the two are different measures and printing both as `P=` would
+ * invite comparing them.
+ */
+function formatSkillLine(
+  skill: { name: string; probability: number; location?: string; description: string },
+  isAlternative: boolean,
+): string {
+  const label = isAlternative ? '(alternative) ' : '';
+  const path = skill.location ? ` - ${skill.location}` : '';
+  const score = isAlternative
+    ? `relevance=${skill.probability.toFixed(2)}`
+    : `P=${skill.probability.toFixed(2)}`;
+  return `• ${label}/skill:${skill.name} (${score})${path}\n  ${skill.description}`;
+}
+
 export function registerSystemOneTools(
   pi: ExtensionAPI,
   systemOneClient: SystemOneClient,
@@ -90,7 +109,7 @@ export function registerSystemOneTools(
       threshold: Type.Optional(
         Type.Number({
           description:
-            'Match confidence threshold between 0.0 and 1.0 (default SYSTEM_ONE_THRESHOLD).',
+            'Minimum probability the winning skill must reach, between 0.0 and 1.0 (default 0.25).',
         }),
       ),
     }),
@@ -102,18 +121,21 @@ export function registerSystemOneTools(
 
       const result = await skillRouter.findSkills(
         params.query,
-        params.threshold ?? SYSTEM_ONE_THRESHOLD,
+        params.threshold === undefined ? {} : { minWinnerProbability: params.threshold },
         ctx,
         signal,
       );
 
       let summaryText = '';
-      if (result.recommended.length > 0) {
-        const lines = result.recommended.map(
-          (r) =>
-            `• /skill:${r.name} (P=${r.probability.toFixed(2)})${r.location ? ` - ${r.location}` : ''}\n  ${r.description}`,
-        );
+      if (result.primary) {
+        const lines = [formatSkillLine(result.primary, false)];
+        lines.push(...result.runnersUp.map((r) => formatSkillLine(r, true)));
         summaryText = `Recommended skill(s):\n${lines.join('\n')}\n\nTo use a skill, invoke /skill:<name> or use the read tool to open its SKILL.md file.`;
+      } else if (result.abstained && result.candidates.length > 0) {
+        summaryText =
+          result.abstainReason === 'none-won'
+            ? `No skill is needed for this task: System One chose none among ${result.candidates.length} candidate(s).`
+            : `No skill was judged relevant among ${result.candidates.length} candidate(s) (${result.abstainReason ?? 'no answer'}).`;
       } else if (result.candidates.length > 0) {
         summaryText = `No skills met the confidence threshold among candidates: ${result.candidates.join(', ')}`;
       } else {
@@ -142,7 +164,7 @@ export function registerSystemOneTools(
     name: 'system_one_evaluate',
     label: 'System One Evaluate',
     description:
-      'Ask typed System One questions (choice, noul, score) about structured state. Returns calibrated probabilities.',
+      'Ask typed System One questions (choice, bool, score) about structured state. Returns calibrated probabilities.',
     promptSnippet: 'Perform fast calibrated structured decisions and classifications over state',
     promptGuidelines: [
       'Use system_one_evaluate when you need structured probability, categorical choice, or scored rubric decisions rather than text generation.',
@@ -152,7 +174,12 @@ export function registerSystemOneTools(
       questions: Type.Record(
         Type.String(),
         Type.Object({
-          type: Type.Union([Type.Literal('choice'), Type.Literal('noul'), Type.Literal('score')]),
+          type: Type.Union([
+            Type.Literal('choice'),
+            Type.Literal('bool'),
+            Type.Literal('noul'),
+            Type.Literal('score'),
+          ]),
           instructions: Type.String({ description: 'The judgment instruction/question' }),
           criteria: Type.Optional(
             Type.Any({ description: 'Options, yes/no criterion, or rubric levels' }),

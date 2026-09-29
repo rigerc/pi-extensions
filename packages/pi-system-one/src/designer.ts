@@ -2,7 +2,7 @@ import type { ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
 import type {
   SystemOneEvaluationRequest,
   SystemOneInstruction,
-  NoulQuestionConfig,
+  BoolQuestionConfig,
   QuestionConfig,
 } from './types.js';
 
@@ -12,10 +12,11 @@ export const MAX_DESIGNED_QUESTIONS = 6;
 export const DESIGN_SYSTEM_PROMPT = [
   'You design System One evaluations for the System One model.',
   "Given a user's request, reply with ONLY a JSON object (no prose, no code fence):",
-  '{"state": <string or object holding the material to judge>, "questions": {"<snake_case_id>": {"type": "noul"|"choice"|"score", "instructions": "<the judgment>", "criteria": <type-specific>}}}',
+  '{"state": <string or object holding the material to judge>, "questions": {"<snake_case_id>": {"type": "bool"|"choice"|"score", "instructions": "<the judgment>", "criteria": <type-specific>}}}',
   'Rules:',
   `- Use 1 to ${MAX_DESIGNED_QUESTIONS} questions, each independent and answerable from "state" alone.`,
-  '- "noul" is a yes/no probability question; optional "criteria" may describe the true and false outcomes.',
+  '- "instructions" is plain text, and every criterion is plain text (a string): the classifier takes strings, not objects.',
+  '- "bool" is a yes/no probability question; optional "criteria" may describe the true and false outcomes.',
   '- "choice" requires "criteria" as an object mapping option keys to descriptions.',
   '- "score" requires "criteria" as an array of at least two rubric levels, ordered lowest to highest; array index 0 is score 0.',
   '- "state" must contain concrete, self-contained content: never reference external context.',
@@ -53,12 +54,15 @@ export function validateDesign(raw: unknown): SystemOneEvaluationRequest | null 
     if (!value || typeof value !== 'object') continue;
     const q = value as { type?: unknown; instructions?: unknown; criteria?: unknown };
     if (typeof q.instructions !== 'string' || !q.instructions.trim()) continue;
-    if (q.type !== 'noul' && q.type !== 'choice' && q.type !== 'score') continue;
+    if (q.type !== 'bool' && q.type !== 'noul' && q.type !== 'choice' && q.type !== 'score') {
+      continue;
+    }
 
-    if (q.type === 'noul') {
-      // Noul criteria describe the yes/no outcomes; keeping them fixes the boundary
+    // `noul` is the retired spelling of a bool question and is canonicalised here.
+    if (q.type === 'bool' || q.type === 'noul') {
+      // Bool criteria describe the yes/no outcomes; keeping them fixes the boundary
       // case, and dropping them (the old behaviour) left it undefined.
-      const criteria: NoulQuestionConfig['criteria'] = {};
+      const criteria: BoolQuestionConfig['criteria'] = {};
       if (q.criteria && typeof q.criteria === 'object' && !Array.isArray(q.criteria)) {
         const raw = q.criteria as Record<string, unknown>;
         if (raw.true !== undefined) criteria.true = raw.true as SystemOneInstruction;
@@ -66,8 +70,8 @@ export function validateDesign(raw: unknown): SystemOneEvaluationRequest | null 
       }
       questions[id] =
         criteria.true !== undefined || criteria.false !== undefined
-          ? { type: 'noul', instructions: q.instructions, criteria }
-          : { type: 'noul', instructions: q.instructions };
+          ? { type: 'bool', instructions: q.instructions, criteria }
+          : { type: 'bool', instructions: q.instructions };
       continue;
     }
 

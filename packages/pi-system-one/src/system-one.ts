@@ -1,160 +1,99 @@
-import { TypeSafeClient, choice, noul, score } from '@typesafe-ai/sdk';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import * as os from 'node:os';
 import type {
-  SystemOneEvaluationRequest,
-  SystemOneEvaluationResponse,
-  SystemOneAnswerResult,
-  SystemOneProvider,
-  SystemOneSessionStats,
-  SystemOneState,
-  SystemOneUsage,
+  ClassifierApi,
+  ClassifierModel,
+  ClassifierQuestion,
+  ClassifierResult,
+  Usage,
+} from '@earendil-works/pi-ai';
+import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
+import {
+  BOOL_FALSE_CRITERIA,
+  BOOL_TRUE_CRITERIA,
+  renderInstruction,
+  validateQuestion,
+  wrapState,
+  type QuestionConfig,
+  type SystemOneAnswerResult,
+  type SystemOneEvaluationRequest,
+  type SystemOneEvaluationResponse,
+  type SystemOneSessionStats,
+  type SystemOneState,
+  type SystemOneUsage,
 } from './types.js';
-
-export type { SystemOneProvider };
-
-/** Bare id valid on hosted Jev; Laya treats an unknown Jev id as auto-routing. */
-export const DEFAULT_MODEL = 'jev-latest';
-
-/** Safely below laya-serve's 50,000-character state limit. */
-export const LAYA_MAX_STATE_CHARS = 48_000;
+import { adjustProbability, isPromptClassifier } from './thresholds.js';
 
 /**
- * @typesafe-ai/sdk requires a non-empty key and always sends a bearer header. Laya
- * ignores that header when LAYA_API_KEY is unset, so keep this transport-only value
- * private and never expose it through config, status, persistence, or logs.
+ * The classifier served when nothing else is selected. `typesafe/jev-latest` is pi's
+ * own Jev model, and every other provider in the catalog exposes an equivalent.
  */
-const LOCAL_SDK_PLACEHOLDER = 'pi-system-one-local-no-auth';
+export const DEFAULT_PROVIDER = 'typesafe';
+export const DEFAULT_MODEL = 'jev-latest';
 
-export type ApiKeySource = 'env' | 'file';
+/** The subset of pi's model registry this extension needs, so tests can supply a fake. */
+export type ClassifierRegistry = Pick<
+  ModelRegistry,
+  | 'getModelOfType'
+  | 'getAvailableOfType'
+  | 'classify'
+  | 'getProviderAuthStatus'
+  | 'getProviderDisplayName'
+>;
 
-export interface SystemOneProviderDefinition {
-  label: string;
-  /** SDK root; the client appends `/v1/systemone`, so this must not include `/v1`. */
-  baseURL: string;
-  /** Legacy provider-specific base URL env var (TypeSafe only). */
-  baseURLEnv?: string;
-  model: string;
-  /** Legacy provider-specific model env var (TypeSafe only). */
-  modelEnv?: string;
-  keyEnv?: string;
-  secretFile?: string;
-  auth: 'required' | 'optional';
-}
-
-export const SYSTEM_ONE_PROVIDERS: Record<SystemOneProvider, SystemOneProviderDefinition> = {
-  typesafe: {
-    label: 'TypeSafe',
-    baseURL: 'https://api.typesafe.ai',
-    baseURLEnv: 'TYPESAFE_BASE_URL',
-    model: DEFAULT_MODEL,
-    modelEnv: 'TYPESAFE_DEFAULT_MODEL',
-    keyEnv: 'TYPESAFE_API_KEY',
-    secretFile: 'typesafe_api_key',
-    auth: 'required',
-  },
-  openrouter: {
-    label: 'OpenRouter',
-    baseURL: 'https://openrouter.ai/api',
-    model: DEFAULT_MODEL,
-    keyEnv: 'OPENROUTER_API_KEY',
-    secretFile: 'openrouter_api_key',
-    auth: 'required',
-  },
-  laya: {
-    label: 'Laya (local)',
-    baseURL: 'http://127.0.0.1:8000',
-    model: DEFAULT_MODEL,
-    keyEnv: 'LAYA_API_KEY',
-    secretFile: 'laya_api_key',
-    auth: 'optional',
-  },
-};
-
-/** Fully resolved primary/secondary request target, with provenance for status output. */
-export interface SystemOneProviderConfig {
-  provider: SystemOneProvider;
-  label: string;
-  apiKey?: string;
-  baseURL: string;
-  model: string;
-  /** Where the key came from, e.g. `$OPENROUTER_API_KEY`. */
-  keyOrigin: string | null;
-  /** Whether requests use a user-configured bearer credential. */
-  authMode: 'none' | 'bearer';
-}
-
-/** Public, secret-free view of the active provider for `/system-one status`. */
-export interface SystemOneProviderInfo {
-  provider: SystemOneProvider;
-  label: string;
-  baseURL: string;
-  model: string;
-  keyOrigin: string | null;
-  authMode: 'none' | 'bearer';
-}
-
-export interface LayaHealthResult {
-  endpoint: string;
-  loaded: string[];
-  device: string;
-  checkedAt: number;
-}
-
-export interface LayaHealthStatus {
-  endpoint: string;
-  checkedAt: number;
-  result?: LayaHealthResult;
-  error?: string;
+/** One classifier the registry offers, in a form the settings UI and status can show. */
+export interface ClassifierModelInfo {
+  provider: string;
+  id: string;
+  name: string;
+  /** Which wire protocol serves it, e.g. `typesafe-system-one` or `llama-cpp-classify`. */
+  api: string;
 }
 
 /** Layered-config overrides pushed in by the settings service. */
 export interface ProviderOverrides {
-  provider?: SystemOneProvider | 'auto';
-  baseURL?: string;
+  provider?: string;
   model?: string;
+  /**
+   * Divides a local model's answer logits before they become probabilities. Values
+   * above 1 soften an overconfident distribution; it never changes the answer. APIs
+   * that cannot apply it ignore it.
+   */
+  temperature?: number;
 }
 
-/** HTTP statuses meaning "this provider cannot serve the request, but the other might". */
-export const FALLBACK_STATUSES = [401, 402, 403, 404] as const;
+/** Public, secret-free view of the active classifier for `/system-one status`. */
+export interface SystemOneProviderInfo {
+  provider: string;
+  model: string;
+  /** Display name of the provider, when the registry knows one. */
+  label: string;
+  api: string;
+  /** `ok` when the provider has working credentials, otherwise the reason it does not. */
+  auth: string;
+  /** Where the selection came from, for status output. */
+  source: 'settings' | 'env' | 'default';
+}
 
-const BASE_URL_OVERRIDE_ENV = 'PI_SYSTEM_ONE_BASE_URL';
-const MODEL_OVERRIDE_ENV = 'PI_SYSTEM_ONE_MODEL';
-const API_KEY_OVERRIDE_ENV = 'PI_SYSTEM_ONE_API_KEY';
 const PROVIDER_ENV = 'PI_SYSTEM_ONE_PROVIDER';
-const SECRETS_DIR_ENV = 'PI_SYSTEM_ONE_SECRETS_DIR';
-const LEGACY_BASE_URL_OVERRIDE_ENV = 'PI_JEV_BASE_URL';
+const MODEL_OVERRIDE_ENV = 'PI_SYSTEM_ONE_MODEL';
+const TEMPERATURE_ENV = 'PI_SYSTEM_ONE_TEMPERATURE';
 const LEGACY_MODEL_OVERRIDE_ENV = 'PI_JEV_MODEL';
-const LEGACY_API_KEY_OVERRIDE_ENV = 'PI_JEV_API_KEY';
 const LEGACY_PROVIDER_ENV = 'PI_JEV_PROVIDER';
-const LEGACY_SECRETS_DIR_ENV = 'PI_JEV_SECRETS_DIR';
 
-/** Every environment variable this extension reads, for docs and tests. */
+/**
+ * Environment variables this extension reads, for docs and tests. Credentials are
+ * deliberately absent: pi owns `auth.json` and each provider's own env var, so this
+ * package never reads or stores a key.
+ */
 export const SYSTEM_ONE_ENV = {
   provider: PROVIDER_ENV,
-  apiKey: API_KEY_OVERRIDE_ENV,
-  baseURL: BASE_URL_OVERRIDE_ENV,
   model: MODEL_OVERRIDE_ENV,
-  secretsDir: SECRETS_DIR_ENV,
-  layaApiKey: 'LAYA_API_KEY',
+  temperature: TEMPERATURE_ENV,
 } as const;
 
 export const LEGACY_JEV_ENV = {
   provider: LEGACY_PROVIDER_ENV,
-  apiKey: LEGACY_API_KEY_OVERRIDE_ENV,
-  baseURL: LEGACY_BASE_URL_OVERRIDE_ENV,
   model: LEGACY_MODEL_OVERRIDE_ENV,
-  secretsDir: LEGACY_SECRETS_DIR_ENV,
 } as const;
-
-/** Secrets live next to Pi's own store by default; override for custom layouts and tests. */
-function secretsDir(): string {
-  return (
-    readAliasedEnv(SECRETS_DIR_ENV, LEGACY_SECRETS_DIR_ENV)?.value ??
-    path.join(os.homedir(), '.pi', 'agent', 'secrets')
-  );
-}
 
 function readEnv(name: string): string | null {
   const value = process.env[name]?.trim();
@@ -164,223 +103,205 @@ function readEnv(name: string): string | null {
 function readAliasedEnv(
   canonicalName: string,
   legacyName: string,
-): { value: string; name: string; legacy: boolean } | null {
+): { value: string; name: string } | null {
   const canonical = readEnv(canonicalName);
-  if (canonical) return { value: canonical, name: canonicalName, legacy: false };
+  if (canonical) return { value: canonical, name: canonicalName };
   const legacy = readEnv(legacyName);
-  return legacy ? { value: legacy, name: legacyName, legacy: true } : null;
+  return legacy ? { value: legacy, name: legacyName } : null;
 }
 
-function readSecretFile(fileName: string): { key: string; origin: string } | null {
-  const filePath = path.join(secretsDir(), fileName);
-  if (!fs.existsSync(filePath)) return null;
-  try {
-    const content = fs.readFileSync(filePath, 'utf8').trim();
-    if (content) return { key: content, origin: `~/.pi/agent/secrets/${fileName}` };
-  } catch {
-    // An unreadable secret file is treated as absent.
-  }
-  return null;
-}
-
-/** A known explicit provider, or `auto` for unset/unknown values. */
-export function parseProvider(value: string | null | undefined): SystemOneProvider | 'auto' {
+/** A provider id from settings or `PI_SYSTEM_ONE_PROVIDER`, or null to auto-select. */
+export function parseProvider(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase();
-  if (normalized === 'typesafe' || normalized === 'openrouter' || normalized === 'laya') {
-    return normalized;
+  if (!normalized || normalized === 'auto') return null;
+  return normalized;
+}
+
+/**
+ * Resolve a user-supplied model reference against the classifiers on offer.
+ *
+ * A bare id is matched as an id, a `provider/id` pair is matched as a pair, and only a
+ * value matching neither is read as a reference. Splitting on the first slash alone would
+ * be wrong: on a gateway `typesafe/jev-latest` is a *model id*, not a reference to the
+ * `typesafe` provider, and guessing wrong sends the request to a different bill.
+ *
+ * `defaultProvider` supplies the provider when the value names only a model. Returns null
+ * only when there is nothing to resolve, so the caller can report the provider and the
+ * remedy for a model that matches nothing.
+ */
+export function resolveModelRef(
+  value: string | null | undefined,
+  defaultProvider: string,
+  available: readonly ClassifierModel<ClassifierApi>[],
+): { provider: string; model: string } | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  // A model id wins over a reference: `typesafe/jev-latest` on a gateway is an id.
+  const asId =
+    available.find((model) => model.id === trimmed) ??
+    available.find((model) => `${model.provider}/${model.id}` === trimmed);
+  if (asId) return { provider: asId.provider, model: asId.id };
+
+  const slash = trimmed.indexOf('/');
+  if (slash > 0) {
+    const provider = trimmed.slice(0, slash);
+    const model = trimmed.slice(slash + 1);
+    const exact = available.find((c) => c.provider === provider && c.id === model);
+    if (exact) return { provider, model };
   }
-  return 'auto';
-}
 
-/** Infer the provider from an explicit base URL; only OpenRouter is distinguishable. */
-export function inferProviderFromBaseURL(
-  baseURL: string | null | undefined,
-): SystemOneProvider | null {
-  if (!baseURL) return null;
-  return /openrouter\.ai/i.test(baseURL) ? 'openrouter' : null;
-}
-
-/**
- * Whether a base URL override may be used for `provider`. A URL that names the other
- * provider is rejected, so one provider's key is never sent to the other's host.
- */
-function overrideAppliesTo(
-  baseURL: string | null | undefined,
-  provider: SystemOneProvider,
-): boolean {
-  if (
-    provider === 'laya' &&
-    baseURL &&
-    /(?:openrouter\.ai|(?:^|\.)typesafe\.ai)(?:[/:]|$)/i.test(baseURL)
-  ) {
-    return false;
-  }
-  const inferred = inferProviderFromBaseURL(baseURL);
-  return inferred === null || inferred === provider;
-}
-
-/** Apply the layered base URL/model overrides to a resolved provider config. */
-function applyOverrides(
-  config: SystemOneProviderConfig,
-  overrides: ProviderOverrides,
-): SystemOneProviderConfig {
-  const baseURL = overrides.baseURL?.trim();
-  const model = overrides.model?.trim();
-  return {
-    ...config,
-    baseURL: baseURL && overrideAppliesTo(baseURL, config.provider) ? baseURL : config.baseURL,
-    model: model || config.model,
-  };
-}
-
-function buildConfig(
-  provider: SystemOneProvider,
-  apiKey?: string,
-  keyOrigin: string | null = null,
-): SystemOneProviderConfig {
-  const def = SYSTEM_ONE_PROVIDERS[provider];
-  const legacyBaseURL = def.baseURLEnv ? readEnv(def.baseURLEnv) : null;
-  const legacyModel = def.modelEnv ? readEnv(def.modelEnv) : null;
-  const overrideBaseURL = readAliasedEnv(
-    BASE_URL_OVERRIDE_ENV,
-    LEGACY_BASE_URL_OVERRIDE_ENV,
-  )?.value;
-  return {
-    provider,
-    label: def.label,
-    apiKey,
-    baseURL:
-      (overrideBaseURL && overrideAppliesTo(overrideBaseURL, provider) ? overrideBaseURL : null) ??
-      legacyBaseURL ??
-      def.baseURL,
-    model:
-      readAliasedEnv(MODEL_OVERRIDE_ENV, LEGACY_MODEL_OVERRIDE_ENV)?.value ??
-      legacyModel ??
-      def.model,
-    keyOrigin,
-    authMode: apiKey ? 'bearer' : 'none',
-  };
-}
-
-/** Credentials for one provider: its env var first, then its secret file. */
-export function resolveProviderConfig(provider: SystemOneProvider): SystemOneProviderConfig | null {
-  const def = SYSTEM_ONE_PROVIDERS[provider];
-  const envKey = def.keyEnv ? readEnv(def.keyEnv) : null;
-  if (envKey) return buildConfig(provider, envKey, `$${def.keyEnv}`);
-
-  const fileKey = def.secretFile ? readSecretFile(def.secretFile) : null;
-  if (fileKey) return buildConfig(provider, fileKey.key, fileKey.origin);
-
-  return def.auth === 'optional' ? buildConfig(provider) : null;
-}
-
-/**
- * Credentials for one provider with the cross-provider `PI_SYSTEM_ONE_API_KEY` applied first.
- * A provider selected through layered settings must not bypass that override, which the
- * documented resolution order places above every provider-specific key.
- */
-export function resolveProviderConfigFor(
-  provider: SystemOneProvider,
-): SystemOneProviderConfig | null {
-  const overrideKey = readAliasedEnv(API_KEY_OVERRIDE_ENV, LEGACY_API_KEY_OVERRIDE_ENV);
-  if (overrideKey) return buildConfig(provider, overrideKey.value, `$${overrideKey.name}`);
-  return resolveProviderConfig(provider);
-}
-
-function resolveOverrideConfig(): SystemOneProviderConfig | null {
-  const apiKey = readAliasedEnv(API_KEY_OVERRIDE_ENV, LEGACY_API_KEY_OVERRIDE_ENV);
-  if (!apiKey) return null;
-
-  const forced = parseProvider(readAliasedEnv(PROVIDER_ENV, LEGACY_PROVIDER_ENV)?.value);
-  const provider =
-    forced !== 'auto'
-      ? forced
-      : (inferProviderFromBaseURL(
-          readAliasedEnv(BASE_URL_OVERRIDE_ENV, LEGACY_BASE_URL_OVERRIDE_ENV)?.value,
-        ) ?? 'typesafe');
-  return buildConfig(provider, apiKey.value, `$${apiKey.name}`);
-}
-
-/**
- * Resolve the primary provider, first match wins:
- * 1. `PI_SYSTEM_ONE_API_KEY` (+ optional `PI_SYSTEM_ONE_PROVIDER` / `PI_SYSTEM_ONE_BASE_URL` / `PI_SYSTEM_ONE_MODEL`)
- * 2. forced provider via `PI_SYSTEM_ONE_PROVIDER=typesafe|openrouter|laya`
- * 3. auto-detect: `TYPESAFE_API_KEY` then `OPENROUTER_API_KEY` (env, then secret file)
- */
-export function resolveSystemOneProvider(): SystemOneProviderConfig | null {
-  const override = resolveOverrideConfig();
-  if (override) return override;
-
-  const forced = parseProvider(readAliasedEnv(PROVIDER_ENV, LEGACY_PROVIDER_ENV)?.value);
-  if (forced !== 'auto') return resolveProviderConfig(forced);
-
-  // A base URL override that names a provider selects it, so its key is used rather
-  // than the other provider's key being sent to that host.
-  const inferred = inferProviderFromBaseURL(
-    readAliasedEnv(BASE_URL_OVERRIDE_ENV, LEGACY_BASE_URL_OVERRIDE_ENV)?.value,
+  const onDefault = available.find(
+    (model) => model.provider === defaultProvider && model.id === trimmed,
   );
-  if (inferred) return resolveProviderConfig(inferred);
+  if (onDefault) return { provider: defaultProvider, model: trimmed };
 
-  return resolveProviderConfig('typesafe') ?? resolveProviderConfig('openrouter');
+  return { provider: defaultProvider, model: trimmed };
 }
 
-/** The other hosted provider, when configured. Local Laya never crosses the cloud boundary. */
-export function resolveFallbackProvider(
-  primary: SystemOneProvider,
-  overrides: ProviderOverrides = {},
-): SystemOneProviderConfig | null {
-  if (primary === 'laya') return null;
-  const other: SystemOneProvider = primary === 'typesafe' ? 'openrouter' : 'typesafe';
-  const config = resolveProviderConfigFor(other);
-  return config ? applyOverrides(config, overrides) : null;
+function readTemperature(overrides: ProviderOverrides): number | undefined {
+  const raw = overrides.temperature ?? readEnv(TEMPERATURE_ENV);
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return value;
 }
 
-/** Backwards-compatible key lookup used by older callers. */
-export function resolveApiKeySource(): {
-  key: string;
-  source: ApiKeySource;
-  origin: string;
-} | null {
-  const config = resolveSystemOneProvider();
-  if (!config?.apiKey || !config.keyOrigin) return null;
+/**
+ * Every classifier the registry can serve right now, deduplicated and in catalog order.
+ *
+ * Availability already accounts for credentials, so a provider the user has not
+ * authenticated with simply does not appear.
+ */
+export async function listClassifierModels(
+  registry: ClassifierRegistry,
+): Promise<ClassifierModelInfo[]> {
+  const models = await registry.getAvailableOfType('classifier');
+  const seen = new Set<string>();
+  const result: ClassifierModelInfo[] = [];
+  for (const model of models) {
+    if (!model) continue;
+    const key = `${model.provider}/${model.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      provider: model.provider,
+      id: model.id,
+      name: model.name || model.id,
+      api: model.api,
+    });
+  }
+  return result;
+}
+
+/** Convert one question to the shape pi's classifier API takes. */
+export function toClassifierQuestion(id: string, question: QuestionConfig): ClassifierQuestion {
+  const instructions = renderInstruction(question.instructions);
+
+  if (question.type === 'choice') {
+    const criteria: Record<string, string> = {};
+    for (const [option, description] of Object.entries(question.criteria)) {
+      criteria[option] = renderInstruction(description) || option;
+    }
+    return { type: 'choice', instructions, criteria };
+  }
+
+  if (question.type === 'score') {
+    return {
+      type: 'score',
+      instructions,
+      criteria: question.criteria.map(
+        (level, index) => renderInstruction(level) || `Level ${index}`,
+      ),
+    };
+  }
+
+  // `noul` and `bool` are the same question under two names.
+  const criteria = question.criteria ?? undefined;
   return {
-    key: config.apiKey,
-    source: config.keyOrigin.startsWith('$') ? 'env' : 'file',
-    origin: config.keyOrigin,
+    type: 'bool',
+    instructions,
+    criteria: {
+      true: renderInstruction(criteria?.true) || BOOL_TRUE_CRITERIA,
+      false: renderInstruction(criteria?.false) || BOOL_FALSE_CRITERIA,
+    },
   };
 }
 
-/** Whether a failure is provider-scoped, so retrying the other provider is worthwhile. */
-export function isProviderFallbackError(error: unknown): boolean {
-  const status = (error as { status?: unknown } | null | undefined)?.status;
-  return typeof status === 'number' && (FALLBACK_STATUSES as readonly number[]).includes(status);
+/** Map one classifier answer onto the shape this extension has always returned. */
+export function toAnswerResult(answer: ClassifierResult['answers'][string]): SystemOneAnswerResult {
+  if (answer.type === 'choice') {
+    return {
+      type: 'choice',
+      value: answer.choice,
+      confidence: answer.confidence,
+      distribution: answer.probabilities,
+      raw: answer,
+    };
+  }
+  if (answer.type === 'score') {
+    return { type: 'score', value: answer.score, confidence: answer.confidence, raw: answer };
+  }
+  return { type: 'bool', value: answer.probability, raw: answer };
 }
 
-/** Accept the SDK's snake_case usage, OpenRouter's `cost`, and legacy camelCase. */
+/**
+ * Scale an answer's evidence when a prompt-rendered classifier produced it.
+ *
+ * A local model's label probabilities are usually overconfident, so every number a
+ * routing decision could compare against is discounted here, at the one place all of
+ * them pass through. The classifier's own value stays on `raw`, so status output can
+ * show what was actually returned.
+ */
+function discountAnswer(answer: SystemOneAnswerResult, api: string): SystemOneAnswerResult {
+  if (!isPromptClassifier(api)) return answer;
+  const discounted: SystemOneAnswerResult = { ...answer };
+  if (typeof discounted.value === 'number') {
+    discounted.value = adjustProbability(discounted.value, api);
+  }
+  if (typeof discounted.confidence === 'number') {
+    discounted.confidence = adjustProbability(discounted.confidence, api);
+  }
+  if (discounted.distribution) {
+    const distribution: Record<string, number> = {};
+    for (const [option, probability] of Object.entries(discounted.distribution)) {
+      distribution[option] = adjustProbability(probability, api);
+    }
+    discounted.distribution = distribution;
+  }
+  return discounted;
+}
+
+/**
+ * Normalize pi's `Usage` into the token and cost totals this extension reports.
+ *
+ * A classifier that reports no tokens leaves the counts at zero rather than guessing,
+ * so an uncosted call never inflates the session totals.
+ */
 export function normalizeUsage(raw: unknown): SystemOneUsage {
-  const usage = (raw ?? {}) as Record<string, unknown>;
+  const usage = (raw ?? {}) as Partial<Usage> & Record<string, unknown>;
   const num = (value: unknown): number | undefined =>
     typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
-  const inputTokens = num(usage.input_tokens) ?? num(usage.inputTokens) ?? 0;
-  const outputTokens = num(usage.output_tokens) ?? num(usage.outputTokens) ?? 0;
-  const totalTokens =
-    num(usage.total_tokens) ?? num(usage.totalTokens) ?? inputTokens + outputTokens;
-  const costUsd = num(usage.cost) ?? num(usage.costUsd);
+  const inputTokens = num(usage.input) ?? num(usage.input_tokens) ?? num(usage.inputTokens) ?? 0;
+  const outputTokens =
+    num(usage.output) ?? num(usage.output_tokens) ?? num(usage.outputTokens) ?? 0;
+  const totalTokens = num(usage.totalTokens) ?? num(usage.total_tokens) ?? inputTokens + outputTokens;
+  const cost = usage.cost as { total?: number } | undefined;
+  const costUsd = num(cost?.total) ?? num(usage.costUsd) ?? num(usage.cost);
 
   return costUsd === undefined
     ? { inputTokens, outputTokens, totalTokens }
     : { inputTokens, outputTokens, totalTokens, costUsd };
 }
 
-/** Actionable message naming every way to configure a provider. */
+/** Actionable message naming every way to get a classifier. */
 export function describeUnconfigured(): string {
   return [
-    'No System One provider is configured.',
-    'Set TYPESAFE_API_KEY (TypeSafe) or OPENROUTER_API_KEY (OpenRouter),',
-    `or write ~/.pi/agent/secrets/{${SYSTEM_ONE_PROVIDERS.typesafe.secretFile},${SYSTEM_ONE_PROVIDERS.openrouter.secretFile}}.`,
-    `For local Laya, set ${PROVIDER_ENV}=laya and run laya-serve.`,
-    `${API_KEY_OVERRIDE_ENV} is the generic bearer-token override (legacy ${LEGACY_API_KEY_OVERRIDE_ENV} is also accepted in 0.8).`,
+    'No System One classifier is available.',
+    'Sign in with `/login typesafe` (or openrouter, cloudflare-workers-ai, vercel-ai-gateway, opencode),',
+    'or run a llama.cpp router and load a model with `/llama`.',
+    `Set ${PROVIDER_ENV} and ${MODEL_OVERRIDE_ENV} to choose one explicitly.`,
   ].join(' ');
 }
 
@@ -628,12 +549,18 @@ function errorMessage(error: unknown): string {
   return (error as { message?: string } | null | undefined)?.message ?? String(error);
 }
 
+/** A prompt-rendered classifier serves the state inside a chat prompt, not a request body. */
+
+/**
+ * A prompt-rendered classifier sends the state in one prompt per question and pi
+ * writes the state twice in each, so the same state costs roughly twice the context
+ * it does on a System One service. Cap it lower so the second copy still fits.
+ */
+export const PROMPT_MAX_STATE_CHARS = Math.floor(MAX_STATE_CHARS / 2);
+
 export class SystemOneClient {
-  private clients = new Map<SystemOneProvider, TypeSafeClient>();
-  private apiKey: string | null = null;
+  private registry: ClassifierRegistry | null = null;
   private providerOverrides: ProviderOverrides = {};
-  private lastLayaHealth?: LayaHealthStatus;
-  private healthStatusListener?: (configurationChanged: boolean) => void;
   public stats: SystemOneSessionStats = {
     requestsCount: 0,
     totalTokens: 0,
@@ -641,147 +568,130 @@ export class SystemOneClient {
   };
 
   /**
-   * Apply provider/model/base URL from the layered settings. A non-empty base URL that
-   * points at OpenRouter also infers the provider, matching env behaviour.
+   * Hand this client pi's model registry. Extensions construct it before any event
+   * fires, so it stays usable — and reports itself unconfigured — until the first
+   * context arrives.
    */
+  public attach(registry: ClassifierRegistry): void {
+    this.registry = registry;
+  }
+
+  public detach(): void {
+    this.registry = null;
+  }
+
+  /** Apply the classifier chosen through layered settings. */
   public setProviderOverrides(overrides: ProviderOverrides): void {
-    const previousEndpoint = this.getLayaEndpoint();
     this.providerOverrides = overrides ?? {};
-    this.clients.clear();
-    if (this.getLayaEndpoint() !== previousEndpoint) this.lastLayaHealth = undefined;
-    this.healthStatusListener?.(true);
   }
 
-  public setHealthStatusListener(listener: ((configurationChanged: boolean) => void) | undefined): void {
-    this.healthStatusListener = listener;
+  /** Whether a registry is attached; it says nothing about whether a model is available. */
+  public isConfigured(): boolean {
+    return this.registry !== null;
   }
 
-  /** Resolved provider, honouring layered settings and an in-session key override. */
-  public getConfig(): SystemOneProviderConfig | null {
-    const { provider: choice, baseURL } = this.providerOverrides;
+  /** Classifiers the registry can serve right now. */
+  public async listAvailable(): Promise<ClassifierModelInfo[]> {
+    if (!this.registry) return Promise.resolve([]);
+    return listClassifierModels(this.registry);
+  }
 
-    const forced = choice && choice !== 'auto' ? choice : null;
-    const inferred = !forced && baseURL ? inferProviderFromBaseURL(baseURL) : null;
-    const requested = forced ?? inferred;
-
-    // A concrete provider chosen through layered settings must still respect
-    // PI_SYSTEM_ONE_API_KEY, which outranks provider-specific credentials. With no provider
-    // selected, the full env/secret resolution order already handles the override.
-    let base = requested ? resolveProviderConfigFor(requested) : resolveSystemOneProvider();
-
-    // If the selected provider has no credentials of its own, an in-session key can
-    // still target it; with no provider selected, default to TypeSafe.
-    if (!base && this.apiKey) {
-      base = buildConfig(requested ?? 'typesafe', this.apiKey, 'set in-session');
-    }
-    if (!base) return null;
-
-    const config = applyOverrides(base, this.providerOverrides);
-
-    if (this.apiKey) {
+  /**
+   * The explicitly chosen classifier, with the source that asked for it. `provider` is
+   * null when only a model was named, because that model may itself carry a
+   * `provider/` prefix.
+   */
+  private getSelection(): { provider: string | null; model: string; source: 'settings' | 'env' } | null {
+    const settingsProvider = parseProvider(this.providerOverrides.provider);
+    const settingsModel = this.providerOverrides.model?.trim();
+    if (settingsProvider || settingsModel) {
       return {
-        ...config,
-        apiKey: this.apiKey,
-        keyOrigin: 'set in-session',
-        authMode: 'bearer',
+        provider: settingsProvider,
+        model: settingsModel ?? DEFAULT_MODEL,
+        source: 'settings',
       };
     }
-    return config;
+
+    const envProvider = parseProvider(readAliasedEnv(PROVIDER_ENV, LEGACY_PROVIDER_ENV)?.value);
+    const envModel = readAliasedEnv(MODEL_OVERRIDE_ENV, LEGACY_MODEL_OVERRIDE_ENV)?.value;
+    if (envProvider || envModel) {
+      return {
+        provider: envProvider,
+        model: envModel ?? DEFAULT_MODEL,
+        source: 'env',
+      };
+    }
+
+    return null;
   }
 
-  public getProviderInfo(): SystemOneProviderInfo | null {
-    const config = this.getConfig();
-    if (!config) return null;
+  /** A human-readable summary of the active classifier, for status output. */
+  public async getProviderInfo(): Promise<SystemOneProviderInfo | null> {
+    const registry = this.registry;
+    if (!registry) return null;
+
+    const selection = this.getSelection();
+    const source = selection?.source ?? 'default';
+    const defaultProvider = selection?.provider ?? DEFAULT_PROVIDER;
+    const { provider, model } = resolveModelRef(
+      selection?.model ?? DEFAULT_MODEL,
+      defaultProvider,
+      await registry.getAvailableOfType('classifier'),
+    ) ?? { provider: defaultProvider, model: selection?.model ?? DEFAULT_MODEL };
+    const resolved = registry.getModelOfType('classifier', provider, model);
+    const auth = registry.getProviderAuthStatus(provider);
+
     return {
-      provider: config.provider,
-      label: config.label,
-      baseURL: config.baseURL,
-      model: config.model,
-      keyOrigin: config.keyOrigin,
-      authMode: config.authMode,
+      provider,
+      model: resolved?.id ?? model,
+      label: registry.getProviderDisplayName(provider) || provider,
+      api: resolved?.api ?? 'unknown',
+      auth: auth.configured ? (auth.label ?? auth.source ?? 'ok') : 'not configured',
+      source,
     };
   }
 
-  /** A cached result for the currently selected endpoint; status never performs I/O. */
-  public getLayaHealthStatus(): LayaHealthStatus | null {
-    const config = this.getConfig();
-    if (config?.provider !== 'laya') return null;
-    const endpoint = `${config.baseURL.replace(/\/+$/, '')}/health`;
-    return this.lastLayaHealth?.endpoint === endpoint ? this.lastLayaHealth : null;
-  }
+  /**
+   * The classifiers to try, in order.
+   *
+   * An explicitly chosen model is all-or-nothing: if it is not available the caller is
+   * told why rather than quietly served by a different, differently priced model.
+   * Without an explicit choice, everything the registry offers is a candidate, so one
+   * unreachable provider does not disable semantic routing.
+   */
+  private async candidates(
+    registry: ClassifierRegistry,
+    modelOverride: string | undefined,
+  ): Promise<ClassifierModel<ClassifierApi>[]> {
+    const available = await registry.getAvailableOfType('classifier');
 
-  /** Probe Laya's server route without running inference or changing request counters. */
-  public async checkLayaHealth(): Promise<LayaHealthResult> {
-    const config = this.getConfig();
-    if (config?.provider !== 'laya') throw new Error('Select Laya as the provider first.');
-    const endpoint = `${config.baseURL.replace(/\/+$/, '')}/health`;
-    try {
-      const response = await fetch(endpoint, { signal: AbortSignal.timeout(3000) });
-      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
-      const body: unknown = await response.json();
-      if (!body || typeof body !== 'object' || (body as { status?: unknown }).status !== 'ok') {
-        throw new Error('Unexpected health response (expected status: ok)');
-      }
-      const { loaded, device } = body as { loaded?: unknown; device?: unknown };
-      if (
-        !Array.isArray(loaded) ||
-        !loaded.every((model) => typeof model === 'string') ||
-        typeof device !== 'string'
-      ) {
-        throw new Error('Unexpected health response (invalid loaded models or device)');
-      }
-      const result: LayaHealthResult = { endpoint, loaded, device, checkedAt: Date.now() };
-      if (this.getProviderInfo()?.provider === 'laya' && this.getLayaEndpoint() === endpoint) {
-        this.lastLayaHealth = { endpoint, checkedAt: result.checkedAt, result };
-        this.healthStatusListener?.(false);
-      }
-      return result;
-    } catch (error) {
-      if (this.getProviderInfo()?.provider === 'laya' && this.getLayaEndpoint() === endpoint) {
-        this.lastLayaHealth = { endpoint, checkedAt: Date.now(), error: errorMessage(error) };
-        this.healthStatusListener?.(false);
-      }
-      throw error;
+    const requestRef = modelOverride?.trim();
+    const selection = requestRef ? null : this.getSelection();
+    const explicitModel = requestRef ?? selection?.model;
+    const explicitProvider = requestRef ? null : selection?.provider;
+    if (!explicitModel && !explicitProvider) return [...available];
+
+    // With a provider but no model, the provider's default classifier is meant.
+    const { provider, model } = resolveModelRef(
+      explicitModel ?? DEFAULT_MODEL,
+      explicitProvider ?? DEFAULT_PROVIDER,
+      available,
+    ) ?? { provider: explicitProvider ?? DEFAULT_PROVIDER, model: DEFAULT_MODEL };
+
+    // An explicitly chosen classifier is all-or-nothing: substituting a differently
+    // priced model behind the user's back is worse than telling them it is missing.
+    const resolved =
+      available.find((candidate) => candidate.provider === provider && candidate.id === model) ??
+      registry.getModelOfType('classifier', provider, model);
+    if (!resolved) {
+      throw new Error(
+        [
+          `No classifier available for ${provider}/${model}.`,
+          `Run /login ${provider} for hosted classifiers, or /llama to load a local model.`,
+        ].join(' '),
+      );
     }
-  }
-
-  private getLayaEndpoint(): string | null {
-    const config = this.getConfig();
-    return config?.provider === 'laya' ? `${config.baseURL.replace(/\/+$/, '')}/health` : null;
-  }
-
-  public isConfigured(): boolean {
-    return Boolean(this.getConfig());
-  }
-
-  /** Human-readable description of where the API key came from, or null when unconfigured. */
-  public getKeyOrigin(): string | null {
-    return this.getConfig()?.keyOrigin ?? null;
-  }
-
-  public setApiKey(key: string): void {
-    this.apiKey = key;
-    this.clients.clear();
-  }
-
-  private getClient(config: SystemOneProviderConfig): TypeSafeClient {
-    let client = this.clients.get(config.provider);
-    if (!client) {
-      client = new TypeSafeClient({
-        apiKey: config.apiKey ?? LOCAL_SDK_PLACEHOLDER,
-        baseURL: config.baseURL,
-        defaultModel: config.model,
-        defaultHeaders:
-          config.provider === 'openrouter'
-            ? {
-                'HTTP-Referer': 'https://github.com/rigerc/pi-extensions',
-                'X-OpenRouter-Title': 'pi-system-one',
-              }
-            : undefined,
-      });
-      this.clients.set(config.provider, client);
-    }
-    return client;
+    return [resolved];
   }
 
   public async evaluate(
@@ -789,122 +699,101 @@ export class SystemOneClient {
     signal?: AbortSignal,
   ): Promise<SystemOneEvaluationResponse> {
     const startTime = Date.now();
-    const primary = this.getConfig();
-    if (!primary) {
-      throw new Error(describeUnconfigured());
-    }
+    const registry = this.registry;
+    if (!registry) throw new Error(describeUnconfigured());
     this.stats.fallback = undefined;
 
-    const formattedQuestions: Record<string, any> = {};
-    for (const [id, q] of Object.entries(request.questions)) {
-      if (q.type === 'choice') {
-        formattedQuestions[id] = choice(q.instructions, q.criteria);
-      } else if (q.type === 'noul') {
-        // Noul criteria describe the yes/no outcomes; dropping them would leave the
-        // boundary case undefined for the model.
-        formattedQuestions[id] = noul(q.instructions, q.criteria ?? undefined);
-      } else if (q.type === 'score') {
-        formattedQuestions[id] = score(q.instructions, q.criteria as any);
-      }
+    const questions: Record<string, ClassifierQuestion> = {};
+    for (const [id, question] of Object.entries(request.questions)) {
+      const problem = validateQuestion(id, question);
+      if (problem) throw new Error(problem);
+      questions[id] = toClassifierQuestion(id, question);
     }
 
-    const capped = capState(
-      request.state,
-      primary.provider === 'laya' ? LAYA_MAX_STATE_CHARS : MAX_STATE_CHARS,
-    );
-    // The API accepts a plain string state, so pass it through unwrapped.
-    const statePayload: any = capped.value;
+    const candidates = await this.candidates(registry, request.model);
+    if (candidates.length === 0) throw new Error(describeUnconfigured());
 
+    const primary = candidates[0];
+    const maxChars = isPromptClassifier(primary.api)
+      ? PROMPT_MAX_STATE_CHARS
+      : MAX_STATE_CHARS;
+    const capped = capState(request.state, maxChars);
     if (capped.truncatedChars > 0 || capped.truncatedItems > 0) {
       this.stats.truncations = (this.stats.truncations ?? 0) + 1;
       this.stats.truncatedChars = (this.stats.truncatedChars ?? 0) + capped.truncatedChars;
       this.stats.truncatedItems = (this.stats.truncatedItems ?? 0) + capped.truncatedItems;
     }
+    const state = wrapState(capped.value as SystemOneState);
 
-    const body = {
-      state: statePayload,
-      questions: formattedQuestions,
-      model: request.model,
-    };
+    const temperature = readTemperature(this.providerOverrides);
+    const options: { signal?: AbortSignal; temperature?: number } = {};
+    if (signal) options.signal = signal;
+    if (temperature !== undefined) options.temperature = temperature;
 
+    // `classify` reports an inference failure in its result rather than rejecting, so the
+    // chain is driven by `stopReason`. It does still *throw* for some pre-flight failures
+    // — an unresolvable credential throws before any request is made — so a throw is
+    // treated as a failed candidate rather than an exception that ends the chain.
+    // An abort is the caller's decision, not a provider fault, and stops the chain
+    // instead of spending the alternatives.
     let active = primary;
-    let response: any;
-    try {
-      response = await this.getClient(active).systemOne(body, { signal });
-    } catch (error) {
-      // Retry the other hosted provider once, and only for provider-scoped failures.
-      const secondary = isProviderFallbackError(error)
-        ? resolveFallbackProvider(active.provider, this.providerOverrides)
-        : null;
-      if (!secondary) {
-        this.stats.lastError = errorMessage(error);
-        throw error;
+    let result: ClassifierResult | null = null;
+    let lastError = describeUnconfigured();
+
+    for (const [index, candidate] of candidates.entries()) {
+      let outcome: ClassifierResult;
+      try {
+        outcome = await registry.classify(candidate, { state, questions }, options);
+      } catch (error) {
+        // A cancellation the caller asked for is not a provider fault, so it does not
+        // spend the remaining candidates.
+        if (signal?.aborted) {
+          lastError = errorMessage(error);
+          break;
+        }
+        lastError = errorMessage(error);
+        continue;
       }
 
-      this.stats.fallback = {
-        from: active.provider,
-        to: secondary.provider,
-        reason: errorMessage(error),
-      };
-      active = secondary;
-      try {
-        response = await this.getClient(active).systemOne(body, { signal });
-      } catch (retryError) {
-        this.stats.lastError = errorMessage(retryError);
-        throw retryError;
+      if (outcome.stopReason === 'stop') {
+        active = candidate;
+        result = outcome;
+        if (index > 0) {
+          this.stats.fallback = {
+            from: `${primary.provider}/${primary.id}`,
+            to: `${candidate.provider}/${candidate.id}`,
+            reason: lastError,
+          };
+        }
+        break;
       }
+      lastError = outcome.errorMessage ?? `classifier ${outcome.stopReason}`;
+      if (outcome.stopReason === 'aborted') break;
+    }
+
+    if (!result) {
+      this.stats.lastError = lastError;
+      throw new Error(lastError);
     }
 
     const elapsedMs = Date.now() - startTime;
-    const usage = normalizeUsage(response?.usage);
+    const usage = normalizeUsage(result.usage);
 
     this.stats.requestsCount += 1;
-    this.stats.provider = active.provider;
-    this.stats.model = response?.model || active.model;
+    this.stats.provider = result.provider ?? active.provider;
+    this.stats.model = result.model || active.id;
     this.stats.totalTokens += usage.totalTokens;
     this.stats.totalCostUsd += usage.costUsd ?? 0;
     this.stats.lastElapsedMs = elapsedMs;
     this.stats.lastError = undefined;
 
     const answers: Record<string, SystemOneAnswerResult> = {};
-    for (const [id, rawAns] of Object.entries(response?.answers || {})) {
-      const qConfig = request.questions[id];
-      if (!qConfig) continue;
-      const raw = rawAns as any;
-
-      if (qConfig.type === 'choice') {
-        answers[id] = {
-          type: 'choice',
-          value: raw.choice ?? raw.value,
-          confidence: raw.confidence,
-          distribution: raw.probabilities ?? raw.distribution,
-          raw: rawAns,
-        };
-      } else if (qConfig.type === 'noul') {
-        const prob = raw.noul ?? raw.probability ?? raw.value ?? 0;
-        answers[id] = {
-          type: 'noul',
-          value: prob,
-          raw: rawAns,
-        };
-      } else if (qConfig.type === 'score') {
-        const s = raw.score ?? raw.value ?? 0;
-        answers[id] = {
-          type: 'score',
-          value: s,
-          confidence: raw.confidence,
-          distribution: raw.probabilities ?? raw.distribution,
-          legend: raw.legend,
-          raw: rawAns,
-        };
-      }
+    for (const id of Object.keys(questions)) {
+      const answer = result.answers[id];
+      if (!answer) continue;
+      answers[id] = discountAnswer(toAnswerResult(answer), result.api ?? active.api);
     }
 
-    return {
-      answers,
-      model: response?.model || active.model,
-      usage,
-      elapsedMs,
-    };
+    return { answers, model: result.model || active.id, usage, elapsedMs };
   }
 }

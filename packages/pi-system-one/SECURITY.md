@@ -15,13 +15,29 @@ Please include:
 
 We will review reports promptly and publish patches with proper attribution.
 
-## Local Laya endpoints
+## Credentials
 
-Bind an unauthenticated Laya server to loopback (`LAYA_HOST=127.0.0.1`). Do not expose
-an unauthenticated `0.0.0.0:8000` listener to a LAN or public network. If remote access
-is intentional, set a strong `LAYA_API_KEY`, restrict access at the network layer, and
-use TLS through a trusted reverse proxy.
+pi-system-one does not read, store, or display an API key. It calls
+`ctx.modelRegistry.classify()`, and pi resolves the credential from `~/.pi/agent/auth.json`
+(`/login`) or the provider's own environment variable. Nothing secret is written to this
+package's settings files, session entries, or status output, and `baseURL` is no longer a
+setting: the endpoint comes from the provider pi resolved.
 
-Selecting `PI_SYSTEM_ONE_PROVIDER=laya` establishes a local-only routing boundary: pi-system-one does
-not fall back from Laya to TypeSafe or OpenRouter. API keys are read only from the
-environment or Pi's secret directory and are never persisted in settings or sessions.
+Treat `~/.pi/agent/pi-system-one.json` and the `.pi/pi-system-one.json` in a project as
+non-sensitive. They hold mode switches and a classifier selection only.
+
+## Local model endpoints
+
+Bind a llama.cpp router to loopback. Pi's `/login llama.cpp` stores the connection and
+`LLAMA_BASE_URL` / `LLAMA_API_KEY` configure it without a login; do not expose an
+unauthenticated router beyond loopback, because a model server reachable from the network
+accepts prompts from anyone who can reach it.
+
+A request pinned to a local classifier is not silently sent to a hosted one. When no
+classifier is selected at all, every classifier pi can reach is tried in catalog order, so
+a machine with a local router and a signed-in cloud account will prefer whichever answers
+first; pin one with `PI_SYSTEM_ONE_PROVIDER` to make the choice explicit.
+
+Note that a small local model judges the request state as data it can also be instructed
+by. The extension cannot prevent that, which is why local answers are discounted before
+any threshold compares them.

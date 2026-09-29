@@ -1,7 +1,7 @@
 {
   "name": "@rigerc/pi-system-one",
   "version": "0.7.0",
-  "description": "Provider-agnostic semantic routing and typed System One decisions for Pi",
+  "description": "Semantic routing and typed System One classifier decisions for Pi, through pi's classifier API",
   "type": "module",
   "main": "extensions/index.ts",
   "bin": {
@@ -16,7 +16,7 @@
     "pi-coding-agent",
     "typesafe",
     "openrouter",
-    "laya",
+    "llama-cpp",
     "local-ai",
     "jev",
     "system-one",
@@ -39,28 +39,28 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test --import tsx test/*.test.ts",
-    "smoke": "pi -ne -e ./extensions/index.ts -p --no-session \"list loaded tools\""
+    "eval:shortlist": "tsx scripts/shortlist-eval.ts",
+    "smoke": "pi -ne -e builtin:llama.cpp -e ./extensions/index.ts -p --no-session \"list loaded tools\""
   },
   "publishConfig": {
     "access": "public"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.19.0"
   },
   "dependencies": {
-    "@typesafe-ai/sdk": "^0.6.0",
     "tsx": "^4.19.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=0.99.0 <1.0.0",
+    "@earendil-works/pi-coding-agent": ">=0.99.0 <1.0.0",
+    "@earendil-works/pi-tui": ">=0.99.0 <1.0.0",
     "@sinclair/typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.85.0",
-    "@earendil-works/pi-coding-agent": "^0.85.0",
-    "@earendil-works/pi-tui": "^0.85.0",
+    "@earendil-works/pi-ai": "^0.99.1",
+    "@earendil-works/pi-coding-agent": "^0.99.1",
+    "@earendil-works/pi-tui": "^0.99.1",
     "@types/node": "^22.0.0",
     "@sinclair/typebox": "^0.34.28",
     "typescript": "^5.7.0"

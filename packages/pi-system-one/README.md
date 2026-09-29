@@ -1,6 +1,8 @@
 # pi-system-one
 
-Provider-agnostic semantic routing and typed System One decisions for the [Pi coding agent](https://pi.dev). Run the Jev model through [TypeSafe](https://typesafe.ai), [OpenRouter](https://openrouter.ai/typesafe), or a custom Jev-compatible endpoint such as a local [Laya](https://github.com/NandhaKishorM/laya) server.
+Semantic routing and typed System One decisions for the [Pi coding agent](https://pi.dev), running on pi's classifier API. Any classifier pi can reach answers the questions: the Jev models on [TypeSafe](https://typesafe.ai), [OpenRouter](https://openrouter.ai/typesafe), Cloudflare Workers AI, Vercel AI Gateway and OpenCode, plus every model you load on a local [llama.cpp](https://github.com/ggml-org/llama.cpp) router.
+
+Requires **pi 0.99 or newer** and **Node 22.19 or newer**. Earlier pi releases have no classifier API, and this package will not fall back to one.
 
 ## Contents
 
@@ -18,7 +20,7 @@ Provider-agnostic semantic routing and typed System One decisions for the [Pi co
 
 - **Semantic Tool Router (`system_one_find_tools`)**: Automatically searches registered inactive tools and additively activates only the tools needed for the user's specific prompt or workflow. When the local shortlist is judged incomplete, one bounded widening pass searches the tools it never saw.
 - **Skill Discovery (`system_one_find_skill`)**: Semantically matches and suggests the most relevant specialized agent skills (`SKILL.md`) for any task without cluttering prompt context. Routing questions also receive the tail of the previous turn, so an abbreviated follow-up is judged with the context it depends on.
-- **Typed Judgments (`system_one_evaluate`)**: Run fast, calibrated System One decisions directly from the agent using Choice, Noul (yes/no probability), and Score primitives.
+- **Typed Judgments (`system_one_evaluate`)**: Run fast, calibrated System One decisions directly from the agent using Choice, Bool (yes/no probability), and Score primitives.
 - **Dynamic Evaluations (`/system-one test <prompt>`)**: The active model designs a typed question schema for a free-form prompt, then the configured System One model evaluates it.
 - **Automatic Mode (opt-in)**: auto tool routing and auto skill routing are independent paths with independent switches, so either can be enabled alone. `--system-one-auto` / `PI_SYSTEM_ONE_AUTO=1` / `/system-one auto on` sets both; `--system-one-auto-tools`, `--system-one-auto-skills`, `/system-one auto-tools`, and `/system-one auto-skills` control one path each. Off by default.
 - **Automatic Model Mode (opt-in)**: `--system-one-auto-model` / `PI_SYSTEM_ONE_AUTO_MODEL=1` / `/system-one auto-model on` selects fast, balanced, reasoning, long-context, or vision models per prompt. Off by default.
@@ -27,7 +29,7 @@ Provider-agnostic semantic routing and typed System One decisions for the [Pi co
 - **Agent Orchestration & Typed Agent**: `/system-one agents <task>` dispatches `pi-subagents` orchestration; register `agent: "system-one"` in workflows for fast typed judgments without a general-purpose LLM process.
 - **Post-Run Gate Check (`system-one-gate` CLI)**: Fast binary for subagent `gate` parameters (`npx pi-system-one-gate -c "criteria"`). Checks git diff / output and exits 0 on pass or 1 on fail.
 - **On-Demand & Safe**: Runs when called. No unsolicited per-turn API token costs. Fails closed safely: if the System One backend is unreachable or unconfigured, tool routing does not blindly activate unjudged tools and reports zero confidence on keyword fallbacks; the tool-call guard's existence check is deterministic and still applies without a provider.
-- **Cost Clarity**: Tool routing (`system_one_find_tools`, auto tool routing), skill discovery (`system_one_find_skill`, auto skill routing), evaluations (`system_one_evaluate`), typed agents (`agent: "system-one"`), and gate checks (`pi-system-one-gate`) each consume a System One request — auto mode asks every enabled routing question in one shared request, so both paths on still costs one request per prompt. A widening pass adds one more request, and only when the model answers that the first shortlist was incomplete. A tool call blocked by the deterministic path check costs nothing. Heuristic fast-paths like `/system-one auto-model` and topology fallback classify locally without spending model requests. Session token usage is tracked for every provider; OpenRouter cost is reported when available, while local Laya has no API charge.
+- **Cost Clarity**: Tool routing (`system_one_find_tools`, auto tool routing), skill discovery (`system_one_find_skill`, auto skill routing), evaluations (`system_one_evaluate`), typed agents (`agent: "system-one"`), and gate checks (`pi-system-one-gate`) each consume a System One request — auto mode asks every enabled routing question in one shared request, so both paths on still costs one request per prompt. A widening pass adds one more request, and only when the model answers that the first shortlist was incomplete. A tool call blocked by the deterministic path check costs nothing. Heuristic fast-paths like `/system-one auto-model` and topology fallback classify locally without spending model requests. Token usage and cost come from pi's own accounting, using the catalog price of the classifier that served the request; a local classifier has no per-request charge.
 
 ## Installation
 
@@ -39,103 +41,106 @@ Source: [pi-extensions/packages/pi-system-one](https://github.com/rigerc/pi-exte
 
 ## Setup
 
-pi-system-one talks to a Jev-compatible System One endpoint. TypeSafe and OpenRouter are
-detected automatically from their credentials. Local Laya is selected explicitly so
-choosing local execution can never silently route a failed request to the cloud.
-
-| Provider           | API key                               | API root (`baseURL`, SDK appends `/v1/systemone`) |
-| ------------------ | ------------------------------------- | ------------------------------------------------- |
-| TypeSafe (default) | `TYPESAFE_API_KEY=ts_...`             | `https://api.typesafe.ai`                         |
-| OpenRouter         | `OPENROUTER_API_KEY=sk-or-...`        | `https://openrouter.ai/api`                       |
-| Laya (local)       | Not required; optional `LAYA_API_KEY` | `http://127.0.0.1:8000`                           |
+This package makes no requests of its own. It calls `ctx.modelRegistry.classify()`, so pi
+resolves the credential, the endpoint, the wire protocol, and the price. **Sign in the
+normal way:**
 
 ```bash
-export TYPESAFE_API_KEY=ts_...        # TypeSafe-direct
-# or
-export OPENROUTER_API_KEY=sk-or-...   # OpenRouter (prepaid credits required)
+/login typesafe              # jev-latest, the default
+/login openrouter            # typesafe/jev-1.13, ~typesafe/jev-latest
+/login cloudflare-workers-ai # needs CLOUDFLARE_API_KEY and CLOUDFLARE_ACCOUNT_ID
+/login vercel-ai-gateway     # typesafe-ai/jev
+/login opencode              # jev-1.13, jev-1.13-free
 ```
 
-Or store a key in Pi's secret store file:
+Each provider also reads its own environment variable (`TYPESAFE_API_KEY`,
+`OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY`, `OPENCODE_API_KEY`, …), which is the better
+choice in CI where pi should not write credentials. Either way, pi owns the secret: this
+package never reads a key, never stores one, and never prints one.
+
+`/system-one status` reports which classifier is selected, its serving API, and whether its
+provider has working credentials.
+
+### Local models with llama.cpp
+
+Every chat model on a llama.cpp router is also a classifier. Start the server in **router
+mode** — passing `--model`, `-m`, or `-hf` starts single-model mode and there is no router
+to select from:
 
 ```bash
-mkdir -p ~/.pi/agent/secrets
-echo "ts_..." > ~/.pi/agent/secrets/typesafe_api_key
-# or
-echo "sk-or-..." > ~/.pi/agent/secrets/openrouter_api_key
+llama-server \
+  --models-dir ~/models \
+  --no-models-autoload \
+  --jinja \
+  --host 127.0.0.1 \
+  --port 8080 \
+  -ngl 999 \
+  -c 32768
 ```
 
-### Local Laya
-
-Install Laya's server extra, bind it to loopback, and then explicitly select it in the
-Pi process:
+Then connect pi and load a model:
 
 ```bash
-python -m pip install "laya[serve]"
-LAYA_HOST=127.0.0.1 LAYA_DEVICE=cuda LAYA_PRELOAD=1 laya-serve
-
-export PI_SYSTEM_ONE_PROVIDER=laya
+/login llama.cpp             # or: export LLAMA_BASE_URL=http://127.0.0.1:8080
+/llama                       # pick a model to load it
 ```
 
-The server process owns checkpoint downloads, device selection, preload policy, logs,
-and restarts; pi-system-one only calls its Jev-compatible API. Do not include `/v1` in
-`PI_SYSTEM_ONE_BASE_URL` because the SDK appends `/v1/systemone`.
+Keep `--host 127.0.0.1` for a local router. A loaded model appears as a classifier without
+any further configuration; pin it with `PI_SYSTEM_ONE_PROVIDER=llama.cpp` and
+`PI_SYSTEM_ONE_MODEL=<model-id>` when you want local judgement to be the only path.
 
-`jev-latest` lets Laya route automatically. Set `PI_SYSTEM_ONE_MODEL=english`,
-`multilingual`, or `typed-decisions` to pin a checkpoint. Laya's checkpoints have
-smaller effective context windows than hosted Jev, so prefer compact state and test
-large routing workloads locally. pi-system-one also keeps Laya state below the server's
-50,000-character limit.
+Three things about local classification are worth knowing before you tune around them:
 
-Authentication is optional on loopback. To require it, give the server and Pi process
-the same token:
+- **The state costs twice the context.** pi writes the state into every question's prompt,
+  and writes it a second time with the questions in view. The second copy is what makes
+  small models more accurate, and it is why this package caps a local request's state at
+  half the hosted budget.
+- **Local probabilities are overconfident.** The answer is the probability of a single
+  next-token label, and pi's docs are explicit that such distributions read higher than
+  they deserve. Every number a routing threshold compares is discounted by
+  `PROMPT_CLASSIFIER_DISCOUNT` (0.8) before it is compared, and the classifier's own value
+  stays available on `raw`. Set `PI_SYSTEM_ONE_TEMPERATURE=2` to soften the distribution at
+  the source instead; it changes no answer, only how sharp the probabilities are.
+- **Hybrid models need checkpoints.** A model such as Qwen3.5 cannot rewind a partially
+  cached prompt. If each question reprocesses the whole state, start the router with
+  `--ctx-checkpoints 32 --checkpoint-min-step 0`.
 
-```bash
-export LAYA_API_KEY="replace-with-a-random-token"
-LAYA_HOST=127.0.0.1 laya-serve
-export PI_SYSTEM_ONE_PROVIDER=laya
-```
+A small local model is also more likely to follow instructions that appear inside the state
+it is judging. The prompt tells it to treat the state as data; that is not a guarantee, and
+it is a further reason local answers are discounted rather than trusted at face value.
 
-You may instead store the Pi-side token in
-`~/.pi/agent/secrets/laya_api_key`. Run `/system-one health` to probe Laya's
-`GET /health` route. It reports the loaded checkpoints and device without running
-inference; a healthy response can still have no loaded checkpoints when lazy loading is
-enabled. Then run `/system-one test` to verify inference. `/system-one status` shows the
-last health result without contacting the server again. A Laya failure is surfaced to
-the caller and never retried against TypeSafe or OpenRouter.
-When Laya is selected, the footer shows endpoint health. It checks at session start,
-after provider changes, and every minute; `/system-one health` also updates it.
-
-### Provider configuration
+### Choosing a classifier
 
 Resolution order, first match wins:
 
-1. `PI_SYSTEM_ONE_API_KEY` (with optional `PI_SYSTEM_ONE_PROVIDER`, `PI_SYSTEM_ONE_BASE_URL`, `PI_SYSTEM_ONE_MODEL`)
-2. `PI_SYSTEM_ONE_PROVIDER=typesafe|openrouter|laya` — forces that provider; Laya may be keyless
-3. Auto-detect: `TYPESAFE_API_KEY`, then `OPENROUTER_API_KEY` (env, then secret file)
+1. `PI_SYSTEM_ONE_PROVIDER` / `PI_SYSTEM_ONE_MODEL` (or a settings value) — pins one
+   classifier exactly.
+2. Otherwise, every classifier pi can reach is tried in catalog order until one answers.
 
-| Variable                                      | Purpose                                                  | Default               |
-| --------------------------------------------- | -------------------------------------------------------- | --------------------- |
-| `PI_SYSTEM_ONE_PROVIDER`                      | Force `typesafe`, `openrouter`, or explicit local `laya` | `auto`                |
-| `PI_SYSTEM_ONE_API_KEY`                       | Explicit bearer token, overriding provider-specific keys | —                     |
-| `PI_SYSTEM_ONE_BASE_URL`                      | Override the API root (must not include `/v1`)           | per provider          |
-| `PI_SYSTEM_ONE_MODEL`                         | Override the Jev model                                   | `jev-latest`          |
-| `PI_SYSTEM_ONE_SECRETS_DIR`                   | Directory holding the secret files                       | `~/.pi/agent/secrets` |
-| `LAYA_API_KEY`                                | Optional bearer token for a protected Laya server        | —                     |
-| `TYPESAFE_BASE_URL`, `TYPESAFE_DEFAULT_MODEL` | Legacy TypeSafe-only overrides                           | —                     |
+A pinned classifier is all-or-nothing. If it is not available the request fails with the
+provider and the remedy, rather than being quietly served by a differently priced model.
+An unpinned request is resilient: if the first classifier errors, the next one is tried, and
+`/system-one status` reports the switch. A cancellation is not a provider fault and stops
+the chain instead of spending the alternatives.
 
-`PI_SYSTEM_ONE_BASE_URL` (and the settings Base URL) that names OpenRouter also selects the
-OpenRouter provider; a URL naming the other provider is ignored, so one provider's key
-is never sent to the other's host. `PI_SYSTEM_ONE_MODEL` applies to the fallback provider too.
+| Variable                   | Purpose                                                            | Default      |
+| -------------------------- | ------------------------------------------------------------------ | ------------ |
+| `PI_SYSTEM_ONE_PROVIDER`   | Pin a provider (`typesafe`, `openrouter`, `llama.cpp`, …)            | `auto`       |
+| `PI_SYSTEM_ONE_MODEL`      | Pin a model id, or `provider/model`                                 | `jev-latest` |
+| `PI_SYSTEM_ONE_TEMPERATURE`| Label-logit temperature for a local classifier                      | provider default |
 
-If TypeSafe or OpenRouter rejects a request with `401`, `402`, `403`, or `404` and the
-other hosted provider has credentials, pi-system-one retries once against it and reports the
-switch in `/system-one status`. Laya never participates in fallback in either direction.
-Rate limits, timeouts, server errors, and cancellations never trigger a fallback.
+`PI_JEV_PROVIDER` and `PI_JEV_MODEL` are still read as legacy aliases, and the canonical
+name wins when both are set. `PI_SYSTEM_ONE_BASE_URL`, `PI_SYSTEM_ONE_API_KEY`, and
+`PI_SYSTEM_ONE_SECRETS_DIR` no longer do anything: pi resolves the endpoint and the
+credential, and a stale `baseURL` in a settings file is dropped on read.
 
 **OpenRouter notes**
 
-- The bare model id `jev-latest` is mapped server-side to `~typesafe/jev-latest`;
-  pinned ids such as `typesafe/jev-1.13` pass through unchanged.
+- The model ids pi lists are `typesafe/jev-1.13` and `~typesafe/jev-latest`. On a gateway
+  an id is not a `provider/model` reference: `typesafe/jev-1.13` is one model id, not a
+  request for the `typesafe` provider. Write `openrouter/typesafe/jev-1.13` only when you
+  want the provider stated explicitly — the two forms are distinguished by looking the
+  value up in the catalog first, not by splitting on the first slash.
 - Hosted Jev has a 32K context window, so requests stay bounded (at most 10 tool candidates
   and 6 designed questions).
 - OpenRouter billing is prepaid; without credits requests fail with `402`.
@@ -176,9 +181,13 @@ draft value.
 | Tab | Contents |
 | --- | --- |
 | Modes | Routing, model, agents, guard, compaction, and tool access switches |
-| Provider | Provider, Base URL, Model, and read-only API key source |
+| Classifier | Provider, Model, and Temperature, plus a read-only auth-status row |
 | Status | Live session counters and effective values with source layers |
-| Actions | Laya health and connectivity test |
+
+The **Classifier** tab's provider row lists every classifier pi can reach, grouped by
+provider and annotated with the API that serves it. A provider with no working credentials
+is still listed, marked unselectable, and carries the remedy — `run /login <provider>`, or
+`load a model with /llama` for a local router.
 
 ### Layers
 
@@ -217,14 +226,15 @@ but this editor does not write or delete it.
 }
 ```
 
-**API keys are never written to these files or to session entries.** The provider is
-editable, but a key always comes from `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`,
-`LAYA_API_KEY`, or `~/.pi/agent/secrets/`. The **Provider → API key** row is read-only
-and shows the source (for example `$OPENROUTER_API_KEY`), or “not required” for a
-keyless local Laya endpoint.
+**API keys are never written to these files or to session entries, because this package
+never holds one.** Authentication belongs to pi: `/login <provider>`, or the provider's own
+environment variable. The **Classifier → Auth status** row is read-only and reports whether
+the selected provider currently has working credentials, and where they came from.
 
 Malformed values in a settings file are ignored rather than coerced, so a typo cannot
-silently change behaviour. Writes are atomic (temp file + rename).
+silently change behaviour. Writes are atomic (temp file + rename). A `baseURL` left over
+from an earlier version is dropped on read, and a stored `provider: "laya"` falls back to
+`auto`, so an old config cannot point at a classifier that no longer exists.
 
 ### Thresholds and limits
 
@@ -285,11 +295,38 @@ Automatic mode:
   shortlist was incomplete, runs **one** bounded widening pass over the candidates the
   first pass never saw — only for the path(s) judged incomplete, so a tool-only shortfall
   never re-judges skills (a second System One request, only in that case);
-- skips slash commands, empty prompts, and prompts while System One is unconfigured or already evaluating;
+- skips slash commands, empty, too-short, and stall prompts, and prompts while System One is unconfigured or already evaluating;
 - never throws — a backend failure leaves the turn untouched, and a failed widening pass keeps
   the first pass's verdicts.
 
-`SYSTEM_ONE_THRESHOLD` (in `src/skills.ts`) is the one act/reject cutoff: raise it for precision, lower it for recall. Every path — tool router, skill router, `system_one_find_tools`, `system_one_find_skill`, `/system-one skills`, both auto paths — reads that same constant.
+Skill routing has its own thresholds in `src/thresholds.ts`, because one cutoff cannot serve
+four different decisions. `noneThreshold` (0.4) decides whether anything is suggested at all,
+`minWinnerProbability` (0.25) is the floor on the winning option, `runnerUpThreshold` (0.6) and
+`maxRunnersUp` (2) bound the alternatives, and `coverageThreshold` (0.5) decides whether a
+shortlist was complete. `SYSTEM_ONE_THRESHOLD` (0.65) remains the act/reject cutoff for the
+**tool** router only, where a candidate is judged alone and activation is additive. Skill
+selection is not a per-candidate cutoff: one primary Choice over the shortlist plus `none`
+replaces it, so independent per-candidate answers can no longer inject several skills at once.
+
+### Shortlist ranking (BM25)
+
+The local shortlist is built by BM25 over names and descriptions (`src/retrieval/`), with
+word-boundary tokenization and light plural normalization. It is the recall ceiling for both
+routers: a candidate it drops cannot be chosen at any confidence, however obvious it is to the
+judge. It replaces a term-overlap scorer that counted query terms found as **substrings** with
+no inverse document frequency and no length normalisation, so generic English fragments decided
+the order (`we` matched inside `po-w-e-red`, `are` inside `softw-are`).
+
+Because ranking costs no model request, it can be measured exhaustively offline:
+
+```bashnpm run eval:shortlist                       # scan installed skills, compare both rankers
+npm run eval:shortlist -- --corpus ~/.agents/skills --limit 8
+```
+
+Measured on this machine (620 skills, 55 author-written development fixtures, K=12):
+`recall@12` 45.5% → **69.1%**, MRR 0.239 → **0.441**, top-1 16.4% → 32.7%. The fixtures are a
+development set whose targets were chosen from the same corpus, so the number shows direction,
+not absolute quality, and it is not a held-out measurement.
 
 ### System One Gate CLI (`pi-system-one-gate` / `system-one-gate`)
 
@@ -382,11 +419,10 @@ routing switches.
 ## Commands
 
 - `/system-one-settings` — Opens the tabbed settings editor. Ctrl+S saves changed values to the user file; Esc discards the draft.
-- `/system-one status` — Shows the selected provider and configured model, the backend and model that answered the last successful request, authentication and key source, the last cached Laya health check, any fallback on the last request, auto-mode state, session request count, tokens, cost, truncated-state counts, and available tool counts. Configuration alone does not mean the endpoint is reachable.
-- `/system-one health` — Checks the selected Laya server's `GET /health` route with a three-second timeout. Reports loaded models and device; use `/system-one test` to verify inference. The settings editor has the same action.
+- `/system-one status` — Shows the selected classifier as `provider/model`, the provider's display name and the API serving it (`typesafe-system-one`, `llama-cpp-classify`, …), its authentication status, whether the selection came from settings, the environment, or the default, the classifier that answered the last successful request, any fallback on that request, auto-mode state, session request count, tokens, cost, truncated-state counts, and available tool counts. When no classifier is available it says so and names the way to get one.
 - `/system-one help` — Lists available subcommands.
 - `/system-one skills [query]` — Discover and rank matching skills in the workspace using System One.
-- `/system-one test [prompt]` — With no prompt, runs the fixed connectivity smoke test. With a prompt, the active model designs typed questions for that prompt and the configured System One model evaluates them. Designed Noul questions may carry `true`/`false` descriptions, and Score rubrics need at least two levels ordered lowest → highest (index 0 is score 0), matching the SDK. Also accepts `/system-one eval` and `/system-one evaluate`.
+- `/system-one test [prompt]` — With no prompt, runs the fixed connectivity smoke test. With a prompt, the active model designs typed questions for that prompt and the selected classifier evaluates them. Designed bool questions may carry `true`/`false` descriptions, and Score rubrics need at least two levels ordered lowest → highest (index 0 is score 0). Also accepts `/system-one eval` and `/system-one evaluate`.
 - `/system-one enable` — Enables System One tools in the active session (equivalent to **Modes · System One tools** in `/system-one-settings`).
 - `/system-one disable` — Disables System One tools for the active session.
 - `/system-one auto [on|off]` — Master switch: turns both auto routing paths on or off (no argument flips both).
@@ -411,7 +447,8 @@ Used by the model to find capabilities that aren't currently loaded into the pro
 ```
 
 If System One answers that the local shortlist missed a capability, one widening pass judges the
-remaining inactive tools and the result reports the expansion.
+remaining inactive tools and the result reports the expansion. Candidates are ranked with BM25
+over name, description and prompt snippet before any request is made.
 
 ### 2. `system_one_find_skill`
 
@@ -423,9 +460,10 @@ Used by the agent to find relevant specialized workflows and instructions for co
 }
 ```
 
-Recommendations are thresholded, ranked, and returned as `/skill:<name>` with the judged
-probability, so a skill the local term-overlap shortlist dropped can still surface (the
-result marks that case as expanded).
+Recommendations are thresholded, ranked, and returned as at most one primary `/skill:<name>` plus
+`maxRunnersUp` alternatives, each with the judged probability, so a skill the local BM25
+shortlist dropped can still surface (the result marks that case as expanded). When the primary
+Choice is `none` — or `none` is nearly as likely as the winner — nothing is recommended.
 
 ### 3. `system_one_evaluate`
 
@@ -436,12 +474,17 @@ Used for structured decisions, classifications, triage, and scoring.
   "state": { "diff": "..." },
   "questions": {
     "is_breaking": {
-      "type": "noul",
+      "type": "bool",
       "instructions": "Does this change introduce any breaking API changes?"
     }
   }
 }
 ```
+
+`"type"` accepts `choice`, `bool`, and `score`. `"noul"` is still accepted as the old name
+for a yes/no question and is converted to `bool` before the request is sent. `instructions`
+and each criterion are plain text; a question needs at least 2 choice options (at most 62)
+or at least 2 score levels (at most 10), because the answer is chosen by a single label.
 
 ## Upgrading from pi-jev
 

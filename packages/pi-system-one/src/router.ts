@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { SystemOneClient } from './system-one.js';
-import { isSystemOneTool, type NoulQuestionConfig } from './types.js';
+import { isSystemOneTool, type BoolQuestionConfig } from './types.js';
 import { SYSTEM_ONE_THRESHOLD } from './skills.js';
 import { recentContextFrom } from './context.js';
 import {
@@ -8,6 +8,17 @@ import {
   readSufficiency,
   shortlistQuestionId,
 } from './escalation.js';
+import { rankCandidates } from './retrieval/shortlist.js';
+
+/**
+ * The text a tool is retrieved on.
+ *
+ * A tool's prompt snippet is written for exactly this decision ("use when …"), so it is
+ * scored alongside the name and description rather than left out of the ranking.
+ */
+function toolText(tool: ToolMetadata): string {
+  return `${tool.name} ${tool.description ?? ''} ${tool.promptSnippet ?? ''}`.trim();
+}
 
 /** Question-ID prefix so a merged tool+skill request can split the answers apart. */
 export const TOOL_QUESTION_PREFIX = 'tool__';
@@ -34,19 +45,19 @@ export interface RouterResult {
 }
 
 /**
- * One Noul per candidate over a shared state. Each question names its candidate by
- * state path (`tools[i]`) instead of interpolating the name into prose, and states
+ * One bool question per candidate over a shared state. Each question names its candidate
+ * by state path (`tools[i]`) instead of interpolating the name into prose, and states
  * what yes and no mean so the boundary case is not left to the model.
  */
 export function buildToolRelevanceQuestions(
   candidates: ToolMetadata[],
   task: string,
   recentContext?: string,
-): Record<string, NoulQuestionConfig> {
-  const questions: Record<string, NoulQuestionConfig> = {};
+): Record<string, BoolQuestionConfig> {
+  const questions: Record<string, BoolQuestionConfig> = {};
   candidates.forEach((candidate, index) => {
     questions[`${TOOL_QUESTION_PREFIX}${candidate.name}`] = {
-      type: 'noul',
+      type: 'bool',
       instructions: {
         question: 'Does `tools[i]` provide a capability this `task` needs?',
         inspect: `tools[${index}]`,
@@ -87,7 +98,11 @@ export class ToolRouter {
     }));
   }
 
-  /** Exclude names already judged by an earlier pass, so a widening pass adds only new ones. */
+  /**
+   * Exclude names already judged by an earlier pass, so a widening pass adds only new ones.
+   *
+   * Ranking is BM25 over name, description and prompt snippet (see `src/retrieval/`).
+   */
   public shortlist(query: string, limit = 8, exclude?: ReadonlySet<string>): ToolMetadata[] {
     const active = new Set(this.pi.getActiveTools());
     const all = this.getAvailableTools();
@@ -95,27 +110,10 @@ export class ToolRouter {
     const inactive = all.filter(
       (t) => !active.has(t.name) && !isSystemOneTool(t.name) && !(exclude?.has(t.name) ?? false),
     );
-    const terms = query
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .filter(Boolean);
 
-    if (terms.length === 0) {
-      return inactive.slice(0, limit);
-    }
-
-    const scored = inactive.map((tool) => {
-      const text =
-        `${tool.name} ${tool.description || ''} ${tool.promptSnippet || ''}`.toLowerCase();
-      let matchCount = 0;
-      for (const term of terms) {
-        if (text.includes(term)) matchCount += 1;
-      }
-      return { tool, score: matchCount };
-    });
-
-    scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, limit).map((s) => s.tool);
+    return rankCandidates(inactive, query, toolText)
+      .slice(0, limit)
+      .map((ranked) => ranked.candidate);
   }
 
   /**
@@ -137,8 +135,8 @@ export class ToolRouter {
   }
 
   /**
-   * One System One pass over a candidate set: one relevance Noul per tool plus a coverage
-   * Noul that reports whether the local shortlist missed something.
+   * One System One pass over a candidate set: one relevance bool question per tool plus a
+   * coverage bool question that reports whether the local shortlist missed something.
    */
   private async judgePass(
     query: string,

@@ -1,13 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { SystemOneClient } from '../src/system-one.js';
-import { PROVIDER_VALUES, SETTING_SPECS } from '../src/config.js';
+import {
+  PROVIDER_VALUES,
+  SETTING_DEFAULTS,
+  SETTING_SPECS,
+  type SystemOneSettings,
+} from '../src/config.js';
 import {
   InfoSubmenu,
-  LayaHealthSubmenu,
+  ProviderSubmenu,
   TextInputSubmenu,
+  buildProviderGroups,
   buildSettingItems,
+  loadProviderCatalog,
   settingsUiTheme,
+  type ProviderCatalog,
 } from '../src/settings-ui.js';
 import { makeSettingsHarness } from './settings-harness.js';
 
@@ -23,18 +31,34 @@ const UI = {
 };
 const ENTER = '\r';
 const ESCAPE = '\x1b';
+const DOWN = '\x1b[B';
+const UP = '\x1b[A';
 
 function fakeClient(configured = true): SystemOneClient {
   return {
-    getProviderInfo: () =>
+    listAvailable: async () => [
+      {
+        provider: 'typesafe',
+        id: 'jev-latest',
+        name: 'Jev Latest',
+        api: 'typesafe-system-one',
+      },
+      {
+        provider: 'openrouter',
+        id: 'typesafe/jev-1.13',
+        name: 'Jev 1.13',
+        api: 'typesafe-system-one',
+      },
+    ],
+    getProviderInfo: async () =>
       configured
         ? {
-            provider: 'openrouter',
-            label: 'OpenRouter',
-            baseURL: 'https://openrouter.ai/api',
+            provider: 'typesafe',
+            label: 'TypeSafe',
             model: 'jev-latest',
-            keyOrigin: '$OPENROUTER_API_KEY',
-            authMode: 'bearer',
+            api: 'typesafe-system-one',
+            auth: 'ok',
+            source: 'settings',
           }
         : null,
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
@@ -53,7 +77,7 @@ test('test_rows_are_generated_from_the_registry_for_every_group', () => {
     }
     assert.deepEqual(
       ids.filter((id) => !SETTING_SPECS.some((s) => s.key === id)),
-      ['status.apiKey', 'status.session', 'action.layaHealth', 'action.test'],
+      ['status.auth', 'status.session', 'action.test'],
     );
 
     for (const item of items) {
@@ -65,7 +89,7 @@ test('test_rows_are_generated_from_the_registry_for_every_group', () => {
   }
 });
 
-test('test_boolean_and_enum_rows_carry_cycling_values', () => {
+test('test_boolean_rows_cycle_and_the_provider_row_opens_the_catalog', () => {
   const h = makeSettingsHarness({ user: { autoToolRouting: true, provider: 'typesafe' } });
   try {
     h.service.init();
@@ -80,57 +104,80 @@ test('test_boolean_and_enum_rows_carry_cycling_values', () => {
       'the two paths are separate rows',
     );
     assert.equal(byId.get('toolGuard')!.currentValue, 'off');
-    assert.deepEqual(byId.get('provider')!.values, [...PROVIDER_VALUES]);
+    assert.equal(byId.get('provider')!.values, undefined, 'the provider row is a catalog, not a fixed enum');
+    assert.equal(typeof byId.get('provider')!.submenu, 'function');
     assert.equal(byId.get('provider')!.currentValue, 'typesafe');
   } finally {
     h.cleanup();
   }
 });
 
-test('test_string_rows_open_a_text_submenu_and_empty_base_url_reads_as_provider_default', () => {
+test('test_string_rows_open_a_text_submenu_and_empty_temperature_reads_as_provider_default', () => {
   const h = makeSettingsHarness();
   try {
     const items = buildSettingItems(h.service, fakeClient(), UI, () => {});
     const byId = new Map(items.map((item) => [item.id, item]));
 
     assert.equal(typeof byId.get('model')!.submenu, 'function');
-    assert.equal(typeof byId.get('baseURL')!.submenu, 'function');
-    assert.equal(byId.get('baseURL')!.currentValue, '(provider default)');
+    assert.equal(typeof byId.get('temperature')!.submenu, 'function');
+    assert.equal(byId.get('temperature')!.currentValue, '(provider default)');
     assert.equal(byId.get('model')!.currentValue, 'jev-latest');
   } finally {
     h.cleanup();
   }
 });
 
-test('test_readonly_rows_reflect_unconfigured_state', () => {
+test('test_readonly_auth_row_reflects_unconfigured_state_without_a_key', () => {
   const h = makeSettingsHarness();
   try {
     const items = buildSettingItems(h.service, fakeClient(false), UI, () => {});
-    const apiKey = items.find((item) => item.id === 'status.apiKey')!;
-    assert.equal(apiKey.currentValue, '(unset)');
+    const auth = items.find((item) => item.id === 'status.auth')!;
+    assert.equal(auth.currentValue, 'not configured');
+    const output = auth.submenu!('', () => {})
+      .render(90)
+      .join('\n');
+    assert.match(output, /auth:\s+not configured/);
+    assert.doesNotMatch(output, /•/);
+    assert.doesNotMatch(output, /API_KEY|api key|bearer/i);
   } finally {
     h.cleanup();
   }
 });
 
-test('test_readonly_api_key_row_explains_keyless_local_laya', () => {
+test('test_readonly_auth_row_describes_auth_status_from_the_live_info', () => {
   const h = makeSettingsHarness();
-  const localClient = {
-    getProviderInfo: () => ({
-      provider: 'laya',
-      label: 'Laya (local)',
-      baseURL: 'http://127.0.0.1:8000',
-      model: 'jev-latest',
-      keyOrigin: null,
-      authMode: 'none',
-    }),
-    stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
-    isConfigured: () => true,
-  } as unknown as SystemOneClient;
+  const catalog: ProviderCatalog = {
+    models: [],
+    info: {
+      provider: 'llama-cpp',
+      label: 'llama.cpp',
+      model: 'qwen3-4b',
+      api: 'llama-cpp-classify',
+      auth: 'not configured',
+      source: 'settings',
+    },
+  };
   try {
-    const items = buildSettingItems(h.service, localClient, UI, () => {});
-    const apiKey = items.find((item) => item.id === 'status.apiKey')!;
-    assert.equal(apiKey.currentValue, 'not required (local endpoint)');
+    const items = buildSettingItems(
+      h.service,
+      {
+        stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
+        isConfigured: () => true,
+      } as unknown as SystemOneClient,
+      UI,
+      () => {},
+      () => {},
+      { ...h.service.values },
+      catalog,
+    );
+    const auth = items.find((item) => item.id === 'status.auth')!;
+    assert.equal(auth.currentValue, 'not configured');
+    const output = auth.submenu!('', () => {})
+      .render(90)
+      .join('\n');
+    assert.match(output, /provider:\s+llama-cpp/);
+    assert.match(output, /api:\s+llama-cpp-classify/);
+    assert.match(output, /auth:\s+not configured/);
   } finally {
     h.cleanup();
   }
@@ -160,26 +207,20 @@ test('test_text_input_submenu_rejects_empty_when_required_and_cancels_on_escape'
   assert.equal(calls, 1, 'escape still closes the submenu (with no value)');
 });
 
-test('test_text_input_submenu_allows_empty_for_base_url', () => {
+test('test_text_input_submenu_allows_empty_for_temperature', () => {
   let saved: string | undefined | 'never' = 'never';
-  const submenu = new TextInputSubmenu(
-    'Base URL',
-    'https://openrouter.ai/api',
-    true,
-    UI,
-    (value) => {
-      saved = value;
-    },
-  );
+  const submenu = new TextInputSubmenu('Temperature', '1.5', true, UI, (value) => {
+    saved = value;
+  });
 
   submenu.handleInput(ENTER);
-  assert.equal(saved, 'https://openrouter.ai/api');
+  assert.equal(saved, '1.5');
 
-  const cleared = new TextInputSubmenu('Base URL', '', true, UI, (value) => {
+  const cleared = new TextInputSubmenu('Temperature', '', true, UI, (value) => {
     saved = value;
   });
   cleared.handleInput(ENTER);
-  assert.equal(saved, '', 'empty is a meaningful value for base URL');
+  assert.equal(saved, '', 'empty is a meaningful value for temperature');
 });
 
 test('test_info_submenu_closes_on_enter_or_escape', () => {
@@ -194,77 +235,180 @@ test('test_info_submenu_closes_on_enter_or_escape', () => {
   assert.equal(closed, 2);
 });
 
-test('test_laya_health_action_reports_a_live_probe_result', async () => {
-  let rendered = 0;
-  const client = {
-    checkLayaHealth: async () => ({
-      endpoint: 'http://127.0.0.1:8000/health',
-      loaded: [],
-      device: 'cpu',
-      checkedAt: Date.now(),
+test('test_provider_groups_list_every_classifier_with_name_id_and_api', async () => {
+  const catalog = await loadProviderCatalog(fakeClient());
+  const groups = buildProviderGroups(catalog);
+
+  const typesafe = groups.find((group) => group.provider === 'typesafe')!;
+  assert.equal(typesafe.options[0]!.name, 'Jev Latest');
+  assert.equal(typesafe.options[0]!.model, 'jev-latest');
+  assert.equal(typesafe.options[0]!.api, 'typesafe-system-one');
+  assert.equal(typesafe.options[0]!.selectable, true);
+
+  const openrouter = groups.find((group) => group.provider === 'openrouter')!;
+  assert.equal(openrouter.options[0]!.model, 'typesafe/jev-1.13');
+});
+
+test('test_provider_groups_keep_unauthenticated_providers_visible_with_a_remedy', async () => {
+  const catalog = await loadProviderCatalog(fakeClient());
+  const groups = buildProviderGroups(catalog);
+
+  for (const provider of PROVIDER_VALUES) {
+    if (provider === 'auto') continue;
+    assert.ok(
+      groups.some((group) => group.provider === provider),
+      `${provider} must remain visible`,
+    );
+  }
+  const opencode = groups.find((group) => group.provider === 'opencode')!;
+  assert.equal(opencode.options[0]!.selectable, false);
+  assert.match(opencode.options[0]!.remedy!, /login opencode/);
+});
+
+test('test_provider_groups_mark_a_local_pin_with_the_llama_remedy', async () => {
+  const catalog = await loadProviderCatalog({
+    listAvailable: async () => [],
+    getProviderInfo: async () => ({
+      provider: 'llama-cpp',
+      label: 'llama.cpp',
+      model: 'qwen3-4b',
+      api: 'llama-cpp-classify',
+      auth: 'not configured',
+      source: 'settings',
     }),
-  } as unknown as SystemOneClient;
-  const submenu = new LayaHealthSubmenu(
-    client,
+  } as unknown as SystemOneClient);
+
+  const groups = buildProviderGroups(catalog);
+  const local = groups.find((group) => group.provider === 'llama-cpp')!;
+  assert.equal(local.options[0]!.selectable, false);
+  assert.match(local.options[0]!.remedy!, /\/llama/);
+});
+
+test('test_provider_submenu_renders_classifiers_and_selects_an_available_one', async () => {
+  const catalog = await loadProviderCatalog(fakeClient());
+  const draft: SystemOneSettings = { ...SETTING_DEFAULTS };
+  let chosen: string | undefined;
+  const submenu = new ProviderSubmenu(
+    buildProviderGroups(catalog),
+    'auto',
+    UI,
+    () => {},
+    (option) => {
+      chosen = option.model;
+      draft.provider = option.provider;
+      if (option.model) draft.model = option.model;
+    },
+  );
+
+  const output = submenu.render(100).join('\n');
+  assert.match(output, /Classifier · Provider/);
+  assert.match(output, /Jev Latest \[jev-latest\]/);
+  assert.match(output, /typesafe-system-one/);
+  assert.match(output, /run \/login opencode/);
+
+  // Cursor starts on auto; move down to the first catalog entry and pick it.
+  submenu.handleInput(DOWN);
+  submenu.handleInput(ENTER);
+  assert.equal(chosen, 'jev-latest');
+  assert.equal(draft.provider, 'typesafe');
+  assert.equal(draft.model, 'jev-latest');
+});
+
+test('test_provider_submenu_refuses_an_unauthenticated_entry_and_shows_the_remedy', async () => {
+  const catalog = await loadProviderCatalog(fakeClient());
+  let chosen = 0;
+  const submenu = new ProviderSubmenu(
+    buildProviderGroups(catalog),
+    'auto',
     UI,
     () => {},
     () => {
-      rendered += 1;
+      chosen += 1;
     },
   );
-  await new Promise((resolve) => setImmediate(resolve));
-  const output = submenu.render(90).join('\n');
-  assert.match(output, /Healthy/);
-  assert.match(output, /none \(lazy loading\)/);
-  assert.match(output, /Use Test connectivity to verify inference/);
-  assert.equal(rendered, 1);
+
+  // auto, typesafe, openrouter, then cloudflare-workers-ai (unauthenticated).
+  for (let i = 0; i < 3; i++) submenu.handleInput(DOWN);
+  const before = submenu.render(100).join('\n');
+  assert.match(before, /cloudflare-workers-ai/);
+  submenu.handleInput(ENTER);
+  assert.equal(chosen, 0, 'an unauthenticated provider cannot be selected');
+  assert.match(submenu.render(100).join('\n'), /not ready — run \/login cloudflare-workers-ai/);
 });
 
-test('test_status_submenu_reads_provider_and_health_when_opened', () => {
+test('test_provider_submenu_escape_closes_without_selecting', async () => {
+  const catalog = await loadProviderCatalog(fakeClient());
+  let closed = 0;
+  let chosen = 0;
+  const submenu = new ProviderSubmenu(
+    buildProviderGroups(catalog),
+    'auto',
+    UI,
+    () => {
+      closed += 1;
+    },
+    () => {
+      chosen += 1;
+    },
+  );
+
+  submenu.handleInput(UP);
+  submenu.handleInput(ESCAPE);
+  assert.equal(closed, 1);
+  assert.equal(chosen, 0);
+});
+
+test('test_provider_submenu_explains_when_no_classifier_is_available', () => {
+  const submenu = new ProviderSubmenu(
+    buildProviderGroups({ models: [], info: null }),
+    'auto',
+    UI,
+    () => {},
+    () => {},
+  );
+  const output = submenu.render(100).join('\n');
+  assert.match(output, /No classifier is available/);
+  assert.match(output, /\/login <provider>/);
+  assert.match(output, /\/llama/);
+  assert.match(output, /run \/login opencode/, 'known providers stay visible with a remedy');
+});
+
+test('test_status_submenu_reads_the_provider_snapshot_without_a_health_row', () => {
   const h = makeSettingsHarness();
-  let selected: 'openrouter' | 'laya' = 'openrouter';
-  const client = {
-    getProviderInfo: () => ({
-      provider: selected,
-      label: selected,
-      baseURL: selected === 'laya' ? 'http://127.0.0.1:8000' : 'https://openrouter.ai/api',
-      model: 'jev-latest',
-      keyOrigin: null,
-      authMode: selected === 'laya' ? 'none' : 'bearer',
-    }),
-    getLayaHealthStatus: () => ({ result: { loaded: [], device: 'cpu' } }),
-    stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
-    isConfigured: () => true,
-  } as unknown as SystemOneClient;
+  const catalog: ProviderCatalog = {
+    models: [],
+    info: {
+      provider: 'llama-cpp',
+      label: 'llama.cpp',
+      model: 'qwen3-4b',
+      api: 'llama-cpp-classify',
+      auth: 'ok',
+      source: 'settings',
+    },
+  };
   try {
-    const items = buildSettingItems(h.service, client, UI, () => {});
-    selected = 'laya';
+    const items = buildSettingItems(
+      h.service,
+      {
+        stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
+        isConfigured: () => true,
+      } as unknown as SystemOneClient,
+      UI,
+      () => {},
+      () => {},
+      { ...h.service.values },
+      catalog,
+    );
     const status = items.find((item) => item.id === 'status.session')!;
     const output = status.submenu!('', () => {})
       .render(90)
       .join('\n');
-    assert.match(output, /provider:    laya/);
-    assert.match(output, /health \(last check\): healthy/);
+    assert.match(output, /provider:\s+llama-cpp/);
+    assert.match(output, /api:\s+llama-cpp-classify/);
+    assert.doesNotMatch(output, /health/i);
   } finally {
     h.cleanup();
   }
-});
-
-test('test_laya_health_action_explains_when_a_hosted_provider_is_selected', async () => {
-  const client = {
-    checkLayaHealth: async () => {
-      throw new Error('Select Laya as the provider first.');
-    },
-    getProviderInfo: () => ({ provider: 'openrouter' }),
-  } as unknown as SystemOneClient;
-  const submenu = new LayaHealthSubmenu(
-    client,
-    UI,
-    () => {},
-    () => {},
-  );
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.match(submenu.render(90).join('\n'), /Select Laya as the provider/);
 });
 
 test('test_settings_ui_theme_adapts_a_pi_theme', () => {

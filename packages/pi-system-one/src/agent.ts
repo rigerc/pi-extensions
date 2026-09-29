@@ -5,7 +5,7 @@ import type {
   QuestionConfig,
   SystemOneEvaluationResponse,
   SystemOneState,
-  NoulQuestionConfig,
+  BoolQuestionConfig,
 } from './types.js';
 
 const RPC_REQUEST = 'subagents:rpc:v1:request';
@@ -14,7 +14,7 @@ const RPC_REPLY = 'subagents:rpc:v1:reply:';
 export interface SystemOneAgentTaskParams {
   task?: string;
   state?: SystemOneState;
-  type?: 'choice' | 'noul' | 'score';
+  type?: 'choice' | 'bool' | 'noul' | 'score';
   instructions?: string;
   criteria?: any;
   questions?: Record<string, QuestionConfig>;
@@ -42,33 +42,35 @@ export async function executeSystemOneAgentTask(
 
   let questions: Record<string, QuestionConfig> = {};
   const state = params.state ?? params.task ?? 'No state provided';
+  // `noul` is the retired spelling of a bool question and is still accepted on input.
+  const type = params.type === 'noul' ? 'bool' : params.type;
 
   if (params.questions && Object.keys(params.questions).length > 0) {
     questions = params.questions;
-  } else if (params.type === 'choice') {
+  } else if (type === 'choice') {
     questions['judgment'] = {
       type: 'choice',
       instructions: params.instructions || params.task || 'Categorize state',
       criteria: params.criteria || { yes: null, no: null },
     };
-  } else if (params.type === 'score') {
+  } else if (type === 'score') {
     questions['judgment'] = {
       type: 'score',
       instructions: params.instructions || params.task || 'Score state',
       criteria: Array.isArray(params.criteria) ? params.criteria : ['poor', 'acceptable', 'good'],
     };
   } else {
-    // Default to noul (probability / binary check). Noul criteria describe the yes and
+    // Default to bool (probability / binary check). Bool criteria describe the yes and
     // no outcomes, so only the structured form is meaningful; a bare string is ignored.
     const rawCriteria = params.criteria;
-    const noulCriteria: NoulQuestionConfig['criteria'] =
+    const boolCriteria: BoolQuestionConfig['criteria'] =
       rawCriteria && typeof rawCriteria === 'object' && !Array.isArray(rawCriteria)
-        ? (rawCriteria as NoulQuestionConfig['criteria'])
+        ? (rawCriteria as BoolQuestionConfig['criteria'])
         : undefined;
     questions['judgment'] = {
-      type: 'noul',
+      type: 'bool',
       instructions: params.instructions || params.task || 'Evaluate state',
-      criteria: noulCriteria,
+      criteria: boolCriteria,
     };
   }
 

@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import type { SystemOneSessionStats } from './types.js';
 import { SYSTEM_ONE_TOOL_NAMES } from './types.js';
-import type { SystemOneClient } from './system-one.js';
+import type { ProviderOverrides, SystemOneClient } from './system-one.js';
 import {
   SETTING_DEFAULTS,
   SETTING_SPECS,
@@ -54,7 +54,7 @@ export interface ModeControllers {
 export interface SessionStatus {
   values: SystemOneSettings;
   provenance: Record<SettingKey, SettingLayer>;
-  provider: ReturnType<SystemOneClient['getProviderInfo']>;
+  provider: Awaited<ReturnType<SystemOneClient['getProviderInfo']>>;
   stats: SystemOneSessionStats;
   files: { user: string; project: string };
   legacyInputs: string[];
@@ -63,7 +63,7 @@ export interface SessionStatus {
 export interface SettingsServiceOptions {
   /** Environment layer source; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
-  /** Override the user settings file (tests, or a relocated secrets dir). */
+  /** Override the user settings file (tests, or a relocated settings dir). */
   userPath?: string;
   /** Override the project settings file (tests). */
   projectPath?: string;
@@ -205,11 +205,11 @@ export class SettingsService {
     return this.userPath;
   }
 
-  public status(): SessionStatus {
+  public async status(): Promise<SessionStatus> {
     return {
       values: this.values,
       provenance: this.provenance,
-      provider: this.systemOneClient.getProviderInfo(),
+      provider: await this.systemOneClient.getProviderInfo(),
       stats: this.systemOneClient.stats,
       files: this.paths(),
       legacyInputs: this.legacyInputs,
@@ -234,11 +234,10 @@ export class SettingsService {
     }
     this.host.setActiveTools([...active]);
 
-    this.systemOneClient.setProviderOverrides({
-      provider: values.provider,
-      baseURL: values.baseURL,
-      model: values.model,
-    });
+    const overrides: ProviderOverrides = { provider: values.provider, model: values.model };
+    const temperature = parseTemperature(values.temperature);
+    if (temperature !== undefined) overrides.temperature = temperature;
+    this.systemOneClient.setProviderOverrides(overrides);
   }
 
   private recompute(): void {
@@ -263,6 +262,14 @@ export class SettingsService {
       session: this.session,
     });
   }
+}
+
+/** An empty temperature means "provider default"; a non-positive value is ignored, as in the client. */
+function parseTemperature(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 function pathWithSiblingName(filePath: string, siblingName: string): string {

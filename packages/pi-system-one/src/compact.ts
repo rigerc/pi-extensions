@@ -1,6 +1,6 @@
 import type { ExtensionContext, SessionBeforeCompactEvent } from '@earendil-works/pi-coding-agent';
 import { capState, type SystemOneClient } from './system-one.js';
-import type { SystemOneAnswerResult, NoulQuestionConfig } from './types.js';
+import type { BoolQuestionConfig, SystemOneAnswerResult } from './types.js';
 
 export interface CompactResult {
   summary: string;
@@ -63,11 +63,11 @@ export class SystemOneCompactor {
       };
       const capped = capState(state);
       if (capped.truncatedChars > 0 || capped.truncatedItems > 0) return incomplete();
-      const questions: Record<string, NoulQuestionConfig> = {};
+      const questions: Record<string, BoolQuestionConfig> = {};
       for (const item of candidates) {
         if (item.candidate) {
           questions[`keep_${item.index}`] = {
-            type: 'noul',
+            type: 'bool',
             instructions: {
               question: 'Should `entries[i]` remain available in compacted context?',
               inspect: `entries[${item.index}]`,

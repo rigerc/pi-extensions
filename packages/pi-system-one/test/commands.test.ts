@@ -39,14 +39,13 @@ function harness(
 
   const systemOneClient = {
     isConfigured: () => true,
-    getKeyOrigin: () => '~/.pi/agent/secrets/typesafe_api_key',
-    getProviderInfo: () => ({
+    getProviderInfo: async () => ({
       provider: 'typesafe',
       label: 'TypeSafe',
-      baseURL: 'https://api.typesafe.ai',
       model: 'jev-latest',
-      keyOrigin: '~/.pi/agent/secrets/typesafe_api_key',
-      authMode: 'bearer',
+      api: 'typesafe-system-one',
+      auth: 'ok',
+      source: 'settings',
     }),
     stats: { requestsCount: 0, totalTokens: 0, totalCostUsd: 0 },
     evaluate: async (request: any) => ({
@@ -114,11 +113,11 @@ test('/system-one test <prompt> designs the evaluation with the model, then runs
     {
       state: 'diff removes a null check before the token compare',
       questions: {
-        is_risky: { type: 'noul', instructions: 'Is this risky?' },
+        is_risky: { type: 'bool', instructions: 'Is this risky?' },
         verdict: { type: 'choice', instructions: 'Merge?', criteria: { yes: '', no: '' } },
       },
     },
-    { is_risky: { type: 'noul', value: 0.81 }, verdict: { type: 'choice', value: 'no' } },
+    { is_risky: { type: 'bool', value: 0.81 }, verdict: { type: 'choice', value: 'no' } },
   );
 
   await run('test removed null check in auth');
@@ -133,7 +132,7 @@ test('/system-one test <prompt> designs the evaluation with the model, then runs
 
 test('registers /system-one without the old /jev alias', async () => {
   const { commands, calls } = harness({});
-  assert.match(commands.get('system-one')?.description, /Manage System One integration/);
+  assert.match(commands.get('system-one')?.description, /Manage System One classifier integration/);
   assert.equal(commands.has('jev'), false);
 
   await commands.get('system-one').handler('help', {
@@ -146,7 +145,7 @@ test('/system-one test without a prompt keeps the fixed smoke test and skips the
   const { run, calls } = harness(
     {},
     {
-      is_billing: { type: 'noul', value: 0.9 },
+      is_billing: { type: 'bool', value: 0.9 },
       category: { type: 'choice', value: 'billing' },
     },
   );
@@ -171,9 +170,9 @@ test('/system-one eval and /system-one evaluate are accepted aliases', async () 
   const { run, calls } = harness(
     {
       state: 'x',
-      questions: { ok: { type: 'noul', instructions: 'Fine?' } },
+      questions: { ok: { type: 'bool', instructions: 'Fine?' } },
     },
-    { ok: { type: 'noul', value: 1 } },
+    { ok: { type: 'bool', value: 1 } },
   );
 
   await run('eval is this fine');
@@ -217,19 +216,18 @@ test('/system-one auto toggles only when no argument is given', async () => {
   assert.equal(auto.enabled, false);
 });
 
-test('/system-one status reports config origin and excludes own tools from the routable count', async () => {
+test('/system-one status reports the classifier, its api and auth, and excludes own tools from the routable count', async () => {
   const { run, calls } = harness({});
   await run('status');
 
   const status = calls.at(-1)!.message;
-  assert.match(
-    status,
-    /Provider configured: Yes \(from ~\/\.pi\/agent\/secrets\/typesafe_api_key\)/,
-  );
-  assert.match(status, /Selected provider: typesafe \(https:\/\/api\.typesafe\.ai\)/);
-  assert.match(status, /Authentication: bearer/);
-  assert.match(status, /Configured model: jev-latest/);
+  assert.match(status, /Provider configured: Yes/);
+  assert.match(status, /Selected classifier: typesafe\/jev-latest/);
+  assert.match(status, /Provider: TypeSafe \(typesafe-system-one\)/);
+  assert.match(status, /Authentication: ok/);
+  assert.match(status, /Selection source: settings/);
   assert.match(status, /Cost \(session\): n\/a/);
+  assert.doesNotMatch(status, /API key|apiKey|base URL|Laya health/i);
   // active: read. bash is routable; the three jev tools are ours and must not count.
   assert.match(status, /Active tools: 1 \/ Available: 5 \(1 routable\)/);
 });
@@ -239,14 +237,13 @@ test('/system-one status reports the active provider, session cost and cross-pro
     {},
     {},
     {
-      getKeyOrigin: () => '$OPENROUTER_API_KEY',
-      getProviderInfo: () => ({
+      getProviderInfo: async () => ({
         provider: 'openrouter',
         label: 'OpenRouter',
-        baseURL: 'https://openrouter.ai/api',
         model: 'jev-latest',
-        keyOrigin: '$OPENROUTER_API_KEY',
-        authMode: 'bearer',
+        api: 'typesafe-system-one',
+        auth: 'stored',
+        source: 'env',
       }),
       stats: {
         requestsCount: 3,
@@ -261,94 +258,64 @@ test('/system-one status reports the active provider, session cost and cross-pro
 
   await run('status');
   const status = calls.at(-1)!.message;
-  assert.match(status, /Provider configured: Yes \(from \$OPENROUTER_API_KEY\)/);
-  assert.match(status, /Selected provider: openrouter \(https:\/\/openrouter\.ai\/api\)/);
-  assert.match(status, /Configured model: jev-latest/);
+  assert.match(status, /Provider configured: Yes/);
+  assert.match(status, /Selected classifier: openrouter\/jev-latest/);
+  assert.match(status, /Provider: OpenRouter \(typesafe-system-one\)/);
+  assert.match(status, /Authentication: stored/);
+  assert.match(status, /Selection source: env/);
   assert.match(status, /Total tokens used: 1234/);
   assert.match(status, /Cost \(session\): \$0\.004200/);
   assert.match(status, /Last response: openrouter \/ jev-latest/);
   assert.match(status, /Fallback \(last request\): typesafe → openrouter \(401 unauthorized\)/);
 });
 
-test('/system-one status treats keyless local Laya as configured', async () => {
+test('/system-one status shows a local llama.cpp classifier and its wire api', async () => {
   const { run, calls } = harness(
     {},
     {},
     {
-      isConfigured: () => true,
-      getKeyOrigin: () => null,
-      getProviderInfo: () => ({
-        provider: 'laya',
-        label: 'Laya (local)',
-        baseURL: 'http://127.0.0.1:8000',
-        model: 'jev-latest',
-        keyOrigin: null,
-        authMode: 'none',
+      getProviderInfo: async () => ({
+        provider: 'llama-cpp',
+        label: 'llama.cpp (local)',
+        model: 'qwen3-4b',
+        api: 'llama-cpp-classify',
+        auth: 'ok',
+        source: 'settings',
       }),
     },
   );
 
   await run('status');
   const status = calls.at(-1)!.message;
-  assert.match(status, /Provider configured: Yes \(local endpoint; no key required\)/);
-  assert.match(status, /Selected provider: laya \(http:\/\/127\.0\.0\.1:8000\)/);
-  assert.match(status, /Authentication: not required/);
-  assert.match(status, /Laya health \(last check\): not checked/);
-  assert.doesNotMatch(status, /Auto mode inactive/);
+  assert.match(status, /Selected classifier: llama-cpp\/qwen3-4b/);
+  assert.match(status, /Provider: llama\.cpp \(local\) \(llama-cpp-classify\)/);
+  assert.match(status, /Authentication: ok/);
+  assert.match(status, /Selection source: settings/);
 });
 
-test('/system-one health reports Laya details and updates the cached status', async () => {
-  const health = {
-    endpoint: 'http://127.0.0.1:8000/health',
-    loaded: ['english'],
-    device: 'cuda',
-    checkedAt: Date.now(),
-  };
+test('/system-one status prints the actionable message when no classifier is available', async () => {
   const { run, calls } = harness(
     {},
     {},
     {
-      getProviderInfo: () => ({
-        provider: 'laya',
-        label: 'Laya (local)',
-        baseURL: 'http://127.0.0.1:8000',
-        model: 'jev-latest',
-        keyOrigin: null,
-        authMode: 'none',
-      }),
-      getLayaHealthStatus: () => ({
-        endpoint: health.endpoint,
-        checkedAt: health.checkedAt,
-        result: health,
-      }),
-      checkLayaHealth: async () => health,
+      isConfigured: () => false,
+      getProviderInfo: async () => null,
     },
   );
 
-  await run('health');
-  assert.match(calls.at(-1)!.message, /Laya healthy: http:\/\/127\.0\.0\.1:8000\/health/);
-  assert.match(calls.at(-1)!.message, /Loaded models: english/);
-  assert.match(calls.at(-1)!.message, /use \/system-one test to verify inference/);
   await run('status');
-  assert.match(
-    calls.at(-1)!.message,
-    /Laya health \(last check\): healthy; 1 model\(s\) loaded on cuda/,
-  );
+  const status = calls.at(-1)!.message;
+  assert.match(status, /Provider configured: No/);
+  assert.match(status, /No System One classifier is available/);
+  assert.match(status, /\/login typesafe/);
+  assert.match(status, /\/llama/);
 });
 
-test('/system-one health reports failure without claiming the provider is unconfigured', async () => {
-  const { run, calls } = harness(
-    {},
-    {},
-    {
-      checkLayaHealth: async () => {
-        throw new Error('Select Laya as the provider first.');
-      },
-    },
-  );
+test('/system-one health is no longer a command', async () => {
+  const { run, calls } = harness({});
   await run('health');
-  assert.equal(calls.at(-1)!.level, 'error');
-  assert.match(calls.at(-1)!.message, /Select Laya as the provider first/);
+  assert.equal(calls.at(-1)!.level, 'warning');
+  assert.match(calls.at(-1)!.message, /Unknown command \/system-one health/);
 });
 
 test('/system-one status reports effective legacy configuration once', async () => {
