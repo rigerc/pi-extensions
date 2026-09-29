@@ -77,13 +77,55 @@ test('test_rows_are_generated_from_the_registry_for_every_group', () => {
     }
     assert.deepEqual(
       ids.filter((id) => !SETTING_SPECS.some((s) => s.key === id)),
-      ['status.auth', 'status.session', 'action.test'],
+      ['status.auth', 'status.session', 'status.herdsman', 'action.test'],
     );
 
     for (const item of items) {
       assert.ok(item.label.length > 0, `${item.id} has a label`);
       assert.ok(item.currentValue !== undefined, `${item.id} has a value`);
     }
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('test_readonly_herdsman_row_reports_detection_and_the_gate', () => {
+  const h = makeSettingsHarness({ user: { agentOrchestration: true } });
+  try {
+    h.service.init();
+    const build = (herdsman: {
+      available: boolean;
+      managedAgent: boolean;
+      toolActive: boolean;
+    }) =>
+      buildSettingItems(
+        h.service,
+        fakeClient(),
+        UI,
+        () => {},
+        () => {},
+        { ...h.service.values },
+        { models: [], info: null },
+        herdsman,
+      ).find((item) => item.id === 'status.herdsman')!;
+
+    const detected = build({ available: true, managedAgent: false, toolActive: true });
+    assert.equal(detected.currentValue, 'detected');
+    const output = detected.submenu!('', () => {}).render(90).join('\n');
+    assert.match(output, /agent_delegate:\s+registered/);
+    assert.match(output, /orchestration:\s+on/);
+    assert.match(output, /tool active:\s+yes/);
+    assert.match(output, /herdr/);
+    assert.match(output, /install-herdsman/);
+
+    assert.equal(
+      build({ available: false, managedAgent: false, toolActive: false }).currentValue,
+      'not detected',
+    );
+    assert.equal(
+      build({ available: true, managedAgent: true, toolActive: false }).currentValue,
+      'managed agent',
+    );
   } finally {
     h.cleanup();
   }

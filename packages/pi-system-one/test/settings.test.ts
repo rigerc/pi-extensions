@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import { SYSTEM_ONE_TOOL_NAMES } from '../src/types.js';
+import { SYSTEM_ONE_GRANTABLE_TOOL_NAMES } from '../src/types.js';
 import { SESSION_ENTRY_TYPE } from '../src/config-store.js';
 import { configEntry, legacyConfigEntry, makeSettingsHarness } from './settings-harness.js';
 
@@ -129,7 +129,7 @@ test('test_init_applies_settings_to_live_modes_tools_and_provider', () => {
     assert.equal(h.modes.toolGuard.enabled, true);
     assert.equal(h.modes.compactor.enabled, true);
 
-    for (const name of SYSTEM_ONE_TOOL_NAMES) {
+    for (const name of SYSTEM_ONE_GRANTABLE_TOOL_NAMES) {
       assert.ok(h.activeTools().includes(name), `${name} should be granted`);
     }
     assert.ok(h.activeTools().includes('read'), 'pre-existing tools are preserved');
@@ -138,6 +138,72 @@ test('test_init_applies_settings_to_live_modes_tools_and_provider', () => {
       provider: 'openrouter',
       model: 'typesafe/jev-1.13',
     });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('test_system_one_tools_setting_does_not_grant_the_orchestration_tool', () => {
+  const h = makeSettingsHarness({ user: { systemOneTools: true } });
+  try {
+    h.service.init();
+    assert.ok(h.activeTools().includes('system_one_evaluate'));
+    assert.ok(
+      !h.activeTools().includes('system_one_orchestrate'),
+      'orchestration is activated from its own setting, not the tool grant',
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('test_orchestration_tool_activates_only_with_pi_herdsman_and_the_setting', () => {
+  const noHerdsman = makeSettingsHarness({ user: { agentOrchestration: true } });
+  try {
+    noHerdsman.service.init();
+    assert.ok(
+      !noHerdsman.activeTools().includes('system_one_orchestrate'),
+      'no pi-herdsman means no orchestration tool',
+    );
+  } finally {
+    noHerdsman.cleanup();
+  }
+
+  const active = makeSettingsHarness({ user: { agentOrchestration: true } });
+  try {
+    active.modes.agents.herdsmanAvailable = true;
+    active.service.init();
+    assert.ok(active.activeTools().includes('system_one_orchestrate'));
+  } finally {
+    active.cleanup();
+  }
+
+  const disabled = makeSettingsHarness({ user: { agentOrchestration: false } });
+  try {
+    disabled.modes.agents.herdsmanAvailable = true;
+    disabled.service.init();
+    assert.ok(!disabled.activeTools().includes('system_one_orchestrate'));
+  } finally {
+    disabled.cleanup();
+  }
+});
+
+test('test_managed_herdsman_agent_keeps_definition_granted_tools', () => {
+  const h = makeSettingsHarness({
+    activeTools: ['read', 'system_one_evaluate'],
+    managedAgent: true,
+  });
+  try {
+    h.service.init();
+    assert.ok(
+      h.activeTools().includes('system_one_evaluate'),
+      'a tool granted by the definition allowlist survives the settings pass',
+    );
+    assert.ok(!h.activeTools().includes('system_one_orchestrate'));
+    assert.equal(h.modes.auto.toolsEnabled, false, 'auto routing stays off in managed agents');
+    assert.equal(h.modes.autoModel.enabled, false, 'auto-model stays off in managed agents');
+    assert.equal(h.modes.toolGuard.enabled, false, 'tool guard stays off in managed agents');
+    assert.equal(h.modes.compactor.enabled, false, 'compaction stays off in managed agents');
   } finally {
     h.cleanup();
   }

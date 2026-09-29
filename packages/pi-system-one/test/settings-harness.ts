@@ -10,6 +10,11 @@ export interface ModeProbe {
   setEnabled(value: boolean): void;
 }
 
+/** The agents controller also carries pi-herdsman availability for orchestration-tool activation. */
+export interface AgentProbe extends ModeProbe {
+  herdsmanAvailable: boolean;
+}
+
 /** AutoSystemOne exposes two independent routing paths rather than one switch. */
 export interface AutoProbe {
   toolsEnabled: boolean;
@@ -40,6 +45,16 @@ function autoProbe(): AutoProbe {
   };
 }
 
+function agentProbe(): AgentProbe {
+  return {
+    enabled: false,
+    herdsmanAvailable: false,
+    setEnabled(value: boolean) {
+      this.enabled = value;
+    },
+  };
+}
+
 export interface HarnessOptions {
   env?: Record<string, string>;
   user?: Record<string, unknown>;
@@ -48,6 +63,8 @@ export interface HarnessOptions {
   legacyProject?: Record<string, unknown>;
   branchEntries?: Array<Record<string, unknown>>;
   activeTools?: string[];
+  /** Simulate a pi-herdsman managed-agent session (definition allowlist is authoritative). */
+  managedAgent?: boolean;
 }
 
 export interface SettingsHarness {
@@ -56,7 +73,7 @@ export interface SettingsHarness {
   modes: ModeControllers & {
     auto: AutoProbe;
     autoModel: ModeProbe;
-    agents: ModeProbe;
+    agents: AgentProbe;
     toolGuard: ModeProbe;
     compactor: ModeProbe;
   };
@@ -105,7 +122,7 @@ export function makeSettingsHarness(options: HarnessOptions = {}): SettingsHarne
   const modes = {
     auto: autoProbe(),
     autoModel: modeProbe(),
-    agents: modeProbe(),
+    agents: agentProbe(),
     toolGuard: modeProbe(),
     compactor: modeProbe(),
   };
@@ -133,6 +150,7 @@ export function makeSettingsHarness(options: HarnessOptions = {}): SettingsHarne
     projectPath,
     legacyUserPath,
     legacyProjectPath,
+    managedAgent: options.managedAgent,
   });
 
   const branch = [...(options.branchEntries ?? [])];

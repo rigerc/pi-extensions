@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import type { SystemOneSessionStats } from './types.js';
-import { SYSTEM_ONE_TOOL_NAMES } from './types.js';
+import { SYSTEM_ONE_GRANTABLE_TOOL_NAMES, SYSTEM_ONE_ORCHESTRATE_TOOL } from './types.js';
 import type { ProviderOverrides, SystemOneClient } from './system-one.js';
 import {
   SETTING_DEFAULTS,
@@ -46,7 +46,14 @@ export interface ModeControllers {
     setSkillsEnabled(value: boolean): void;
   };
   autoModel: { setEnabled(value: boolean): void };
-  agents: { setEnabled(value: boolean): void };
+  agents: {
+    setEnabled(value: boolean): void;
+    /**
+     * True when pi-herdsman is loaded in this session, so the orchestration tool may be
+     * activated. Set by the extension before `init()`.
+     */
+    herdsmanAvailable?: boolean;
+  };
   toolGuard: { setEnabled(value: boolean): void };
   compactor: { setEnabled(value: boolean): void };
 }
@@ -71,6 +78,11 @@ export interface SettingsServiceOptions {
   legacyUserPath?: string;
   /** Override the legacy project settings fallback (tests). */
   legacyProjectPath?: string;
+  /**
+   * True when this session is a pi-herdsman managed agent: the definition's `tools`
+   * allowlist is authoritative, so the service must not add or remove System One tools.
+   */
+  managedAgent?: boolean;
 }
 
 /**
@@ -94,6 +106,7 @@ export class SettingsService {
   private legacyProjectPath: string;
   private fileAndSessionLegacyInputs: string[] = [];
   private activeLegacyInputs: string[] = [];
+  private managedAgent: boolean;
 
   constructor(
     private host: SettingsHost,
@@ -102,6 +115,7 @@ export class SettingsService {
     options: SettingsServiceOptions = {},
   ) {
     this.env = options.env ?? process.env;
+    this.managedAgent = options.managedAgent ?? false;
     this.userPath = options.userPath ?? userSettingsPath();
     this.projectPath = options.projectPath ?? projectSettingsPath();
     this.legacyUserPath =
@@ -139,6 +153,11 @@ export class SettingsService {
 
   public paths(): { user: string; project: string } {
     return { user: this.userPath, project: this.projectPath };
+  }
+
+  /** Mark this session as a pi-herdsman managed agent before `init()` applies settings. */
+  public setManagedAgent(value: boolean): void {
+    this.managedAgent = value;
   }
 
   /** Load all layers, then push the result into the live mode objects. */
@@ -227,12 +246,20 @@ export class SettingsService {
     this.controllers.toolGuard.setEnabled(values.toolGuard);
     this.controllers.compactor.setEnabled(values.compaction);
 
-    const active = new Set(this.host.getActiveTools());
-    for (const name of SYSTEM_ONE_TOOL_NAMES) {
-      if (values.systemOneTools) active.add(name);
-      else active.delete(name);
+    if (!this.managedAgent) {
+      const active = new Set(this.host.getActiveTools());
+      for (const name of SYSTEM_ONE_GRANTABLE_TOOL_NAMES) {
+        if (values.systemOneTools) active.add(name);
+        else active.delete(name);
+      }
+      // Orchestration is a separate capability from the tool grant: it needs pi-herdsman
+      // and the agent-orchestration setting.
+      const orchestrate =
+        values.agentOrchestration && Boolean(this.controllers.agents.herdsmanAvailable);
+      if (orchestrate) active.add(SYSTEM_ONE_ORCHESTRATE_TOOL);
+      else active.delete(SYSTEM_ONE_ORCHESTRATE_TOOL);
+      this.host.setActiveTools([...active]);
     }
-    this.host.setActiveTools([...active]);
 
     const overrides: ProviderOverrides = { provider: values.provider, model: values.model };
     const temperature = parseTemperature(values.temperature);

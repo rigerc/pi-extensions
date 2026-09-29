@@ -1,4 +1,8 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-coding-agent';
+import { getAgentDir } from '@earendil-works/pi-coding-agent';
 import type { SystemOneClient } from './system-one.js';
 import type { ToolRouter } from './router.js';
 import type { SkillRouter } from './skills.js';
@@ -9,10 +13,16 @@ import type { AgentOrchestrator } from './orchestrator.js';
 import type { ToolGuard } from './tool-guard.js';
 import { designEvaluation } from './designer.js';
 import type { SystemOneEvaluationRequest } from './types.js';
-import { SYSTEM_ONE_TOOL_NAMES, isSystemOneTool } from './types.js';
+import { SYSTEM_ONE_GRANTABLE_TOOL_NAMES, isSystemOneTool } from './types.js';
 import { describeUnconfigured } from './system-one.js';
 import type { SettingsService } from './settings.js';
 import type { SettingKey } from './config.js';
+import {
+  HERDSMAN_JUDGE_DEFINITION,
+  HERDSMAN_THINKING_LEVELS,
+  buildHerdsmanJudgeDefinition,
+  herdsmanJudgeDefinitionPath,
+} from './herdsman.js';
 
 export function registerSystemOneCommands(
   pi: ExtensionAPI,
@@ -74,7 +84,7 @@ export function registerSystemOneCommands(
     const sub = (tokens[0] ?? '').toLowerCase();
     const rest = tokens.slice(1).join(' ');
     const usage =
-      'Available options: /system-one status, /system-one skills [query], /system-one test [prompt], /system-one enable, /system-one disable, /system-one auto [on|off], /system-one auto-tools [on|off], /system-one auto-skills [on|off], /system-one auto-model [on|off], /system-one compact [on|off], /system-one auto-agents [on|off], /system-one tool-guard [on|off], /system-one agents [task], /system-one-settings';
+      'Available options: /system-one status, /system-one skills [query], /system-one test [prompt], /system-one enable, /system-one disable, /system-one auto [on|off], /system-one auto-tools [on|off], /system-one auto-skills [on|off], /system-one auto-model [on|off], /system-one compact [on|off], /system-one auto-agents [on|off], /system-one tool-guard [on|off], /system-one agents [task], /system-one install-herdsman [--model <id>] [--thinking <level>] [--project] [--force], /system-one-settings';
 
     if (sub === 'status' || sub === '') {
       const info = await systemOneClient.getProviderInfo();
@@ -124,7 +134,7 @@ export function registerSystemOneCommands(
         `• Tool guard: ${modeValue('toolGuard', guardMode.enabled) ? 'on' : 'off'}${layer('toolGuard')}`,
         `• System One compaction: ${modeValue('compaction', compactMode.enabled) ? 'on' : 'off'}${layer('compaction')}`,
         `• Agent orchestration: ${modeValue('agentOrchestration', agentMode.enabled) ? 'on' : 'off'}${layer('agentOrchestration')}`,
-        `• System One tools granted: ${modeValue('systemOneTools', activeSet.has(SYSTEM_ONE_TOOL_NAMES[0])) ? 'on' : 'off'}${layer('systemOneTools')}`,
+        `• System One tools granted: ${modeValue('systemOneTools', activeSet.has(SYSTEM_ONE_GRANTABLE_TOOL_NAMES[0])) ? 'on' : 'off'}${layer('systemOneTools')}`,
         ...(settings ? [`• Settings files: ${settings.paths().user}`] : []),
         ...(settings?.legacyInputs.length
           ? [
@@ -317,6 +327,78 @@ export function registerSystemOneCommands(
       return;
     }
 
+    if (sub === 'install-herdsman') {
+      const tokens2 = rest.split(/\s+/).filter(Boolean);
+      let model: string | undefined;
+      let thinking: string | undefined;
+      let project = false;
+      let force = false;
+      let badArg: string | undefined;
+
+      for (let i = 0; i < tokens2.length; i += 1) {
+        const token = tokens2[i];
+        if (token === '--model' || token === '--thinking') {
+          const value = tokens2[i + 1];
+          if (!value) {
+            badArg = token;
+            break;
+          }
+          if (token === '--model') model = value;
+          else thinking = value;
+          i += 1;
+        } else if (token === '--project') {
+          project = true;
+        } else if (token === '--force') {
+          force = true;
+        } else {
+          badArg = token;
+        }
+      }
+
+      if (badArg) {
+        ctx.ui.notify(
+          `Unknown /system-one install-herdsman argument "${badArg}". ${usage}`,
+          'warning',
+        );
+        return;
+      }
+      if (thinking !== undefined && !(HERDSMAN_THINKING_LEVELS as readonly string[]).includes(thinking)) {
+        ctx.ui.notify(
+          `install-herdsman --thinking must be one of: ${HERDSMAN_THINKING_LEVELS.join(', ')}.`,
+          'warning',
+        );
+        return;
+      }
+
+      const target = herdsmanJudgeDefinitionPath(
+        project ? 'project' : 'global',
+        ctx.cwd,
+        getAgentDir(),
+      );
+      if (fs.existsSync(target) && !force) {
+        ctx.ui.notify(
+          `${target} already exists. Re-run with --force to overwrite.`,
+          'warning',
+        );
+        return;
+      }
+
+      const extensionPath = fileURLToPath(new URL('../extensions/index.ts', import.meta.url));
+      try {
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, buildHerdsmanJudgeDefinition({ extensionPath, model, thinking }));
+      } catch (error) {
+        ctx.ui.notify(`Could not write ${target}: ${(error as Error).message}`, 'error');
+        return;
+      }
+
+      ctx.ui.notify(
+        `Wrote pi-herdsman definition ${target}. Inside herdr, delegate with agent_delegate { definition: '${HERDSMAN_JUDGE_DEFINITION}', task: ... }.`,
+        'info',
+      );
+      return;
+    }
+
     if (sub === 'auto-model' || sub === 'automodel') {
       const arg = rest.toLowerCase();
       if (arg !== '' && arg !== 'on' && arg !== 'off') {
@@ -381,9 +463,12 @@ export function registerSystemOneCommands(
 
     if (sub === 'enable') {
       if (settings) settings.set('systemOneTools', true);
-      else pi.setActiveTools([...new Set([...pi.getActiveTools(), ...SYSTEM_ONE_TOOL_NAMES])]);
+      else
+        pi.setActiveTools([
+          ...new Set([...pi.getActiveTools(), ...SYSTEM_ONE_GRANTABLE_TOOL_NAMES]),
+        ]);
       ctx.ui.notify(
-        `System One tools (${SYSTEM_ONE_TOOL_NAMES.join(', ')}) enabled${settings ? ' and saved to user settings' : ' for this session'}.`,
+        `System One tools (${SYSTEM_ONE_GRANTABLE_TOOL_NAMES.join(', ')}) enabled${settings ? ' and saved to user settings' : ' for this session'}.`,
         'info',
       );
       return;

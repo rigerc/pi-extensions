@@ -11,11 +11,25 @@ export type QuestionType = 'choice' | 'bool' | 'noul' | 'score';
 /** The three kinds pi's classifier API understands. */
 export type ClassifierQuestionType = ClassifierQuestion['type'];
 
-/** Tools this extension owns. Never offered as router candidates and toggled together. */
-export const SYSTEM_ONE_TOOL_NAMES = [
+/** Tools granted by the `systemOneTools` setting and toggled together. */
+export const SYSTEM_ONE_GRANTABLE_TOOL_NAMES = [
   'system_one_find_tools',
   'system_one_find_skill',
   'system_one_evaluate',
+] as const;
+
+/** pi-herdsman orchestration tool, activated from its own setting rather than the tool grant. */
+export const SYSTEM_ONE_ORCHESTRATE_TOOL = 'system_one_orchestrate';
+
+/**
+ * Every tool this extension owns. Never offered as router candidates.
+ *
+ * `system_one_orchestrate` is deliberately outside the `systemOneTools` grant: it is
+ * activated per session from the agent-orchestration setting and pi-herdsman availability.
+ */
+export const SYSTEM_ONE_TOOL_NAMES = [
+  ...SYSTEM_ONE_GRANTABLE_TOOL_NAMES,
+  SYSTEM_ONE_ORCHESTRATE_TOOL,
 ] as const;
 
 export function isSystemOneTool(name: string): boolean {

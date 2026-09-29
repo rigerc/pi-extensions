@@ -11,6 +11,7 @@ import { AgentOrchestrator } from '../src/orchestrator.js';
 import { SystemOneAgentHandler } from '../src/agent.js';
 import { ToolGuard } from '../src/tool-guard.js';
 import { SettingsService } from '../src/settings.js';
+import { isHerdsmanAvailable, isManagedHerdsmanAgent } from '../src/herdsman.js';
 import { registerSystemOneSettingsCommand } from '../src/settings-ui.js';
 
 /** Prompts that warrant the multi-agent workflow instead of a single turn. */
@@ -120,12 +121,20 @@ export default function (pi: ExtensionAPI) {
   );
 
   pi.on('session_start', async (_event, ctx) => {
+    // A pi-herdsman managed agent is identified by its launch environment. Its definition's
+    // `tools` allowlist is authoritative, and the footer belongs to the spawning session.
+    const managedAgent = isManagedHerdsmanAgent(ctx, pi.getActiveTools());
+    agents.herdsmanAvailable = isHerdsmanAvailable(pi);
+    settings.setManagedAgent(managedAgent);
+
     if (!attach(ctx)) {
-      ctx.ui.setStatus('system-one', 'system-one: needs pi 0.99 or newer');
+      if (!managedAgent) ctx.ui.setStatus('system-one', 'system-one: needs pi 0.99 or newer');
       settings.init(ctx);
       return;
     }
     settings.init(ctx);
+
+    if (managedAgent) return;
 
     const available = await systemOneClient.listAvailable();
     if (available.length === 0) {

@@ -6,6 +6,7 @@ import type { ToolRouter } from './router.js';
 import type { SkillRouter } from './skills.js';
 import type { QuestionConfig } from './types.js';
 import { SYSTEM_ONE_THRESHOLD } from './skills.js';
+import { registerSystemOneOrchestrateTool } from './orchestrate-tool.js';
 
 /**
  * One rendered skill line: name, judged score, path and description.
@@ -229,4 +230,6 @@ export function registerSystemOneTools(
       };
     },
   });
+
+  registerSystemOneOrchestrateTool(pi, systemOneClient);
 }

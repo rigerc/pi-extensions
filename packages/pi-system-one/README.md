@@ -27,6 +27,7 @@ Requires **pi 0.99 or newer** and **Node 22.19 or newer**. Earlier pi releases h
 - **Tool Call Guard (opt-in)**: `--system-one-tool-guard` / `PI_SYSTEM_ONE_TOOL_GUARD=1` / `/system-one tool-guard on` intercepts tool calls to detect hallucinations and enhance failed results. Existence is checked deterministically against the filesystem (no model request, works offline, `write` excluded so file creation stays valid); System One then judges argument shape against the tool's own description and schema. Off by default.
 - **System One Compaction (opt-in)**: `--system-one-compact` / `PI_SYSTEM_ONE_COMPACT=1` / `/system-one compact on` uses the configured System One model to retain important tool history during `/compact`, while Pi's normal compaction remains the safe fallback.
 - **Agent Orchestration & Typed Agent**: `/system-one agents <task>` dispatches `pi-subagents` orchestration; register `agent: "system-one"` in workflows for fast typed judgments without a general-purpose LLM process.
+- **pi-herdsman Integration (opt-in)**: when pi-herdsman is loaded and agent orchestration is on, `system_one_orchestrate` maps a System One topology judgment onto pi-herdsman `agent_delegate` calls (`implementer`; `scout` + `researcher`; `reviewer`; `generalist`), and `/system-one install-herdsman` writes a `system-one-judge` definition for typed judgments inside managed agents. Requires pi-herdsman and a lead session running inside `herdr`.
 - **Post-Run Gate Check (`system-one-gate` CLI)**: Fast binary for subagent `gate` parameters (`npx pi-system-one-gate -c "criteria"`). Checks git diff / output and exits 0 on pass or 1 on fail.
 - **On-Demand & Safe**: Runs when called. No unsolicited per-turn API token costs. Fails closed safely: if the System One backend is unreachable or unconfigured, tool routing does not blindly activate unjudged tools and reports zero confidence on keyword fallbacks; the tool-call guard's existence check is deterministic and still applies without a provider.
 - **Cost Clarity**: Tool routing (`system_one_find_tools`, auto tool routing), skill discovery (`system_one_find_skill`, auto skill routing), evaluations (`system_one_evaluate`), typed agents (`agent: "system-one"`), and gate checks (`pi-system-one-gate`) each consume a System One request — auto mode asks every enabled routing question in one shared request, so both paths on still costs one request per prompt. A widening pass adds one more request, and only when the model answers that the first shortlist was incomplete. A tool call blocked by the deterministic path check costs nothing. Heuristic fast-paths like `/system-one auto-model` and topology fallback classify locally without spending model requests. Token usage and cost come from pi's own accounting, using the catalog price of the classifier that served the request; a local classifier has no per-request charge.
@@ -404,6 +405,35 @@ if (triage.primaryValue === 'bug') {
 
 Execution is asynchronous; completion is reported back into the session. Automatic dispatch is opt-in via `--system-one-agents` / `PI_SYSTEM_ONE_AGENTS=1` or `/system-one auto-agents on`.
 
+### pi-herdsman Integration
+
+`pi-system-one` works with the [`pi-herdsman`](https://github.com/boadij/pi-herdsman) subagent extension in addition to `pi-subagents`. The lead session must run inside `herdr`, and agent orchestration must be on (`/system-one auto-agents on`, `--system-one-agents`, or `PI_SYSTEM_ONE_AGENTS=1`). When pi-herdsman is detected, `system_one_orchestrate` becomes available:
+
+- **Implementation tasks**: one `agent_delegate` to `implementer` (its own definition delegates recon to `scout`).
+- **Research tasks**: parallel `agent_delegate` to `scout` and `researcher`.
+- **Review tasks**: one `agent_delegate` to `reviewer`.
+- **General tasks**: one `agent_delegate` to `generalist`.
+
+The tool accepts `task`, an optional `topology` override, and `dryRun` to return the plan without starting agents. Delegation is asynchronous: `agent_delegate` returns on acceptance and results arrive later as messages, so pi-herdsman has no staged workflow scripts and the lead must not poll.
+
+`/system-one install-herdsman [--model <provider/model>] [--thinking <level>] [--project] [--force]` writes a `system-one-judge` agent definition (global `~/.pi/agent/agents/`, or the project's `.pi/agents/` with `--project`). The definition loads this extension, exposes only `system_one_evaluate`, and instructs the agent to return a typed judgment. Pin `--model` to a cheap classifier model: unlike the `pi-subagents` `agent: "system-one"` handler, a pi-herdsman agent is a Pi session, so each judgment costs a model turn. `--thinking` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.
+
+Managed agents keep their definition's `tools` allowlist: pi-system-one detects the `PI_HERDSMAN_AGENT_DEFINITION` launch environment and does not add or remove tools or write the status footer in those sessions. The settings editor's **Status** tab shows a read-only `pi-herdsman` row with the detection state and whether `system_one_orchestrate` is active.
+
+#### Gate Check with pi-herdsman
+
+Any pi-herdsman definition with `bash` can run the same gate CLI:
+
+```markdown
+---
+name: gated-implementer
+tools: ["read", "bash", "edit", "write"]
+---
+
+Implement the assignment, then run `npx pi-system-one-gate -c "<acceptance criteria>" --diff` and
+report its verdict with your result.
+```
+
 ### System One Compaction
 
 `/system-one compact on` enables System One-guided compaction. Tool-history entries are evaluated for retention; important paths, errors, constraints, and results stay in the custom summary. User and assistant intent is not rewritten. The feature preserves Pi's `firstKeptEntryId` boundary and falls back to Pi's built-in summary when the backend is unconfigured, fails, or returns unusable data. It does not silently truncate context.
@@ -433,6 +463,7 @@ routing switches.
 - `/system-one compact [on|off]` — Turns System One-guided compaction on or off. Run `/compact` after enabling.
 - `/system-one agents <task>` — Dispatches the task to `pi-subagents`, which selects and coordinates available agents.
 - `/system-one auto-agents [on|off]` — Enables automatic orchestration for complex architecture, refactoring, security, repository-wide, and migration prompts.
+- `/system-one install-herdsman [--model <id>] [--thinking <level>] [--project] [--force]` — Writes a `system-one-judge` pi-herdsman agent definition for typed judgments; refuses to overwrite without `--force`.
 
 ## Tools Provided
 
@@ -485,6 +516,24 @@ Used for structured decisions, classifications, triage, and scoring.
 for a yes/no question and is converted to `bool` before the request is sent. `instructions`
 and each criterion are plain text; a question needs at least 2 choice options (at most 62)
 or at least 2 score levels (at most 10), because the answer is chosen by a single label.
+
+### 4. `system_one_orchestrate`
+
+Available only when pi-herdsman is loaded, the session runs inside `herdr`, and agent
+orchestration is on. It asks System One for a topology (unless `topology` is given) and
+delegates the mapped pi-herdsman definitions.
+
+```json
+{
+  "task": "investigate why the auth middleware leaks sessions",
+  "topology": "research",
+  "dryRun": false
+}
+```
+
+`agent_delegate` returns when an agent accepts the assignment; results arrive later as
+messages. `dryRun` returns the plan without starting an agent. When pi-herdsman is not
+available the tool returns the install/`herdr` remedy instead of failing silently.
 
 ## Upgrading from pi-jev
 

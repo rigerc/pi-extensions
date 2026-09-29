@@ -25,6 +25,8 @@ import {
   type RawSettings,
 } from './config.js';
 import { formatSettingValue, type SettingsService } from './settings.js';
+import { isHerdsmanAvailable, isManagedHerdsmanAgent } from './herdsman.js';
+import { SYSTEM_ONE_ORCHESTRATE_TOOL } from './types.js';
 
 /** Minimal theme helpers handed to submenu components (they render outside SettingsList). */
 export interface SettingsUiTheme {
@@ -391,6 +393,21 @@ function authStatusLabel(info: SystemOneProviderInfo | null): string {
   return info ? info.auth : 'not configured';
 }
 
+/** Session-level pi-herdsman detection, computed by the command handler before the rows build. */
+export interface HerdsmanStatus {
+  /** `agent_delegate` is registered, so pi-herdsman runs as a herdr lead or managed agent. */
+  available: boolean;
+  /** This session is a pi-herdsman managed agent (definition allowlist is authoritative). */
+  managedAgent: boolean;
+  /** `system_one_orchestrate` is in the active tool set right now. */
+  toolActive: boolean;
+}
+
+function herdsmanStatusLabel(status: HerdsmanStatus): string {
+  if (status.managedAgent) return 'managed agent';
+  return status.available ? 'detected' : 'not detected';
+}
+
 /** Build the SettingsList rows from the draft, plus read-only status and diagnostics. */
 export function buildSettingItems(
   settings: SettingsService,
@@ -400,6 +417,7 @@ export function buildSettingItems(
   report: Feedback = () => {},
   draft: SystemOneSettings = settings.values,
   catalog: ProviderCatalog = { models: [], info: null },
+  herdsman: HerdsmanStatus = { available: false, managedAgent: false, toolActive: false },
 ): SettingItem[] {
   const resolved: ResolvedSettings = settings.resolvedSettings;
   const items: SettingItem[] = [];
@@ -523,6 +541,32 @@ export function buildSettingItems(
   });
 
   items.push({
+    id: 'status.herdsman',
+    label: 'pi-herdsman',
+    description:
+      'Read-only. Detects the pi-herdsman subagent extension and the system_one_orchestrate gate.',
+    currentValue: herdsmanStatusLabel(herdsman),
+    submenu: (_current, done) =>
+      new InfoSubmenu(
+        ui.accent(ui.bold('Status · pi-herdsman')),
+        [
+          `  state:          ${herdsmanStatusLabel(herdsman)}`,
+          `  agent_delegate: ${herdsman.available ? 'registered' : 'missing'}`,
+          `  session role:   ${herdsman.managedAgent ? 'managed agent' : 'lead'}`,
+          `  orchestration:  ${draft.agentOrchestration ? 'on' : 'off'} (Modes · Agent orchestration)`,
+          `  tool active:    ${herdsman.toolActive ? 'yes' : 'no'}`,
+          '',
+          ui.dim('  pi-herdsman is inactive outside herdr: it registers only /agents.'),
+          ui.dim('  Run pi inside a herdr pane so agent_delegate and system_one_orchestrate exist.'),
+          ui.dim(
+            '  Typed judgments: /system-one install-herdsman writes the system-one-judge definition.',
+          ),
+        ],
+        done,
+      ),
+  });
+
+  items.push({
     id: 'action.test',
     label: 'Test connectivity',
     description: 'Send one System One request to the configured provider',
@@ -593,6 +637,11 @@ export function registerSystemOneSettingsCommand(
           feedback = { kind, message };
           tui.requestRender();
         };
+        const herdsman: HerdsmanStatus = {
+          available: isHerdsmanAvailable(pi),
+          managedAgent: isManagedHerdsmanAgent(ctx, pi.getActiveTools()),
+          toolActive: pi.getActiveTools().includes(SYSTEM_ONE_ORCHESTRATE_TOOL),
+        };
         const items = buildSettingItems(
           settings,
           systemOneClient,
@@ -601,6 +650,7 @@ export function registerSystemOneSettingsCommand(
           report,
           draft,
           catalog,
+          herdsman,
         );
         const rowsByTab = new Map(
           TABS.map((tab) => [tab, items.filter((item) => tabForItem(item.id) === tab)]),

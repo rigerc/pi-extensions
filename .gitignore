@@ -43,3 +43,6 @@ copier/
 .tick/
 .trekker/
 .jobs.db
+
+# pi-herdsman smoke artifacts
+.pi-herdsman/

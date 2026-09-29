@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { registerSystemOneCommands } from '../src/commands.js';
 import type { SystemOneClient } from '../src/system-one.js';
 import type { ToolRouter } from '../src/router.js';
@@ -14,6 +16,7 @@ function harness(
   answers: Record<string, any> = {},
   clientOverrides: Record<string, any> = {},
   settings?: SettingsService,
+  cwd?: string,
 ) {
   let handler: ((args: string, ctx: any) => Promise<void>) | undefined;
   const commands = new Map<string, any>();
@@ -84,6 +87,7 @@ function harness(
 
   const ctx: any = {
     ui: { notify },
+    cwd: cwd ?? process.cwd(),
     model: { provider: 'openai', id: 'gpt-x' },
     modelRegistry: {
       hasConfiguredAuth: () => true,
@@ -128,6 +132,36 @@ test('/system-one test <prompt> designs the evaluation with the model, then runs
   assert.match(messages, /is_risky: 0.81 \(81% yes\)/);
   assert.match(messages, /verdict: no/);
   assert.equal(calls.at(-1)?.level, 'info');
+});
+
+test('/system-one install-herdsman writes a project definition and refuses to overwrite', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-system-one-herdsman-'));
+  try {
+    const { run, calls } = harness({}, {}, {}, undefined, dir);
+
+    await run('install-herdsman --project');
+    const target = path.join(dir, '.pi', 'agents', 'system-one-judge.md');
+    assert.ok(fs.existsSync(target), 'definition is written');
+    const written = fs.readFileSync(target, 'utf8');
+    assert.match(written, /name: system-one-judge/);
+    assert.match(written, /tools: \["system_one_evaluate"\]/);
+    assert.match(written, /extensions: \[".*extensions\/index\.ts"\]/);
+    assert.match(calls.at(-1)?.message ?? '', /Wrote pi-herdsman definition/);
+
+    await run('install-herdsman --project');
+    assert.match(calls.at(-1)?.message ?? '', /already exists/);
+    assert.equal(calls.at(-1)?.level, 'warning');
+
+    await run('install-herdsman --project --force --thinking high');
+    assert.match(fs.readFileSync(target, 'utf8'), /thinking: high/);
+    assert.equal(calls.at(-1)?.level, 'info');
+
+    await run('install-herdsman --project --thinking bananas');
+    assert.match(calls.at(-1)?.message ?? '', /must be one of/);
+    assert.equal(calls.at(-1)?.level, 'warning');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('registers /system-one without the old /jev alias', async () => {

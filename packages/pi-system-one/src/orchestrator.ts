@@ -163,6 +163,8 @@ return { worker: worker.output, reviewer: reviewer.output };
 
 export class AgentOrchestrator {
   public enabled: boolean;
+  /** Set by the extension at session start when pi-herdsman's delegation tool is present. */
+  public herdsmanAvailable = false;
   private running = false;
 
   constructor(

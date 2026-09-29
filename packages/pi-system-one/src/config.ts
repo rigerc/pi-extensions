@@ -148,7 +148,7 @@ export const SETTING_SPECS: readonly SettingSpec[] = [
     label: 'Agent orchestration',
     group: 'Modes',
     description:
-      'Dispatch pi-subagents workflows, explicitly and automatically (/system-one agents)',
+      'Dispatch pi-subagents workflows, and pi-herdsman agents when detected (/system-one agents, system_one_orchestrate)',
     kind: 'boolean',
     envVar: 'PI_SYSTEM_ONE_AGENTS',
     legacyEnvVar: 'PI_JEV_AGENTS',

@@ -2,14 +2,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ToolRouter, TOOL_CANDIDATE_LIMIT, TOOL_QUESTION_PREFIX } from '../src/router.js';
 import { SYSTEM_ONE_THRESHOLD } from '../src/skills.js';
-import { SYSTEM_ONE_TOOL_NAMES } from '../src/types.js';
+import { SYSTEM_ONE_GRANTABLE_TOOL_NAMES, SYSTEM_ONE_TOOL_NAMES } from '../src/types.js';
 import { SystemOneClient } from '../src/system-one.js';
 
 test('canonical System One tool names replace the former jev tool surface', () => {
-  assert.deepEqual(SYSTEM_ONE_TOOL_NAMES, [
+  assert.deepEqual(SYSTEM_ONE_GRANTABLE_TOOL_NAMES, [
     'system_one_find_tools',
     'system_one_find_skill',
     'system_one_evaluate',
+  ]);
+  assert.deepEqual(SYSTEM_ONE_TOOL_NAMES, [
+    ...SYSTEM_ONE_GRANTABLE_TOOL_NAMES,
+    'system_one_orchestrate',
   ]);
   assert.ok(SYSTEM_ONE_TOOL_NAMES.every((name) => !name.startsWith('jev_')));
 });
@@ -75,6 +79,7 @@ test('ToolRouter never offers its own System One tools as candidates', async () 
     { name: 'system_one_find_tools', description: 'Find and activate tools' },
     { name: 'system_one_find_skill', description: 'Find matching skills' },
     { name: 'system_one_evaluate', description: 'Typed evaluations' },
+    { name: 'system_one_orchestrate', description: 'Delegate through pi-herdsman' },
     { name: 'sqlite_query', description: 'Query sqlite' },
   ];
   let activeTools = ['read'];
@@ -94,6 +99,7 @@ test('ToolRouter never offers its own System One tools as candidates', async () 
   assert.ok(!candidates.includes('system_one_find_tools'));
   assert.ok(!candidates.includes('system_one_find_skill'));
   assert.ok(!candidates.includes('system_one_evaluate'));
+  assert.ok(!candidates.includes('system_one_orchestrate'));
 
   const result = await router.findAndActivate('evaluate skills and find tools');
   assert.deepEqual(result.activated, []);

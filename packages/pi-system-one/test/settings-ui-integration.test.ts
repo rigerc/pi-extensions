@@ -130,6 +130,8 @@ function openSettings() {
         commands.set(name, options);
         if (name === 'system-one-settings') handler = options.handler;
       },
+      getAllTools: () => [],
+      getActiveTools: () => [],
     } as any,
     settings,
     systemOneClient,
