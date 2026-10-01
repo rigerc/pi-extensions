@@ -4,10 +4,12 @@
     "packages/*"
   ],
   "scripts": {
-    "check": "tsc -b packages/pi-system-one",
+    "check": "tsc -b packages/pi-system-one && npm --prefix packages/pi-mcp-dot-json run typecheck",
     "check:pi-system-one": "npm --prefix packages/pi-system-one run typecheck",
-    "test": "npm run test:pi-system-one",
+    "check:pi-mcp-dot-json": "npm --prefix packages/pi-mcp-dot-json run typecheck",
+    "test": "npm run test:pi-system-one && npm run test:pi-mcp-dot-json",
     "test:pi-system-one": "npm --prefix packages/pi-system-one test",
+    "test:pi-mcp-dot-json": "npm --prefix packages/pi-mcp-dot-json test",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "prepublishOnly": "npm run check",
