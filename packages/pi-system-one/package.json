@@ -1,6 +1,6 @@
 {
   "name": "@rigerc/pi-system-one",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Semantic routing and typed System One classifier decisions for Pi, through pi's classifier API",
   "type": "module",
   "main": "extensions/index.ts",
